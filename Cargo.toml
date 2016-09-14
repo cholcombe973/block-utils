@@ -5,7 +5,6 @@ authors = ["Chris Holcombe <xfactor973@gmail.com>"]
 description = "Utilities to work with block devices.  Formatting, getting device info, identifying type of device, etc."
 
 # These URLs point to more information about the repository.
-documentation = ""
 homepage = "https://github.com/cholcombe973/block-utils"
 repository = "https://github.com/cholcombe973/block-utils"
 readme = "README.md"
