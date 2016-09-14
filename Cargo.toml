@@ -2,14 +2,14 @@
 name = "block-utils"
 version = "0.1.0"
 authors = ["Chris Holcombe <xfactor973@gmail.com>"]
-description = ""
+description = "Utilities to work with block devices.  Formatting, getting device info, identifying type of device, etc."
 
 # These URLs point to more information about the repository.
 documentation = ""
-homepage = ""
-repository = ""
-readme = ""
+homepage = "https://github.com/cholcombe973/block-utils"
+repository = "https://github.com/cholcombe973/block-utils"
+readme = "https://github.com/cholcombe973/block-utils/blob/master/README.md"
 license = "MIT"
 
 [dependencies]
-libudev = "*"
+libudev = "~0.2"
