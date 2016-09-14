@@ -1,15 +1,14 @@
-extern crate juju;
 extern crate libudev;
 extern crate regex;
-use self::regex::Regex;
+extern crate uuid;
+
+use regex::Regex;
 use uuid::Uuid;
 
 use std::fs;
 use std::io::ErrorKind;
 use std::path::PathBuf;
 use std::process::{Command, Output};
-
-use log::LogLevel;
 
 // Formats a block device at Path p with XFS
 #[derive(Clone, Debug)]
@@ -188,9 +187,6 @@ pub fn mount_device(device: &Device, mount_point: &str) -> Result<i32, String> {
 }
 
 fn process_output(output: Output) -> Result<i32, String> {
-    juju::log(&format!("Command output: {:?}", output),
-              Some(LogLevel::Debug));
-
     if output.status.success() {
         Ok(0)
     } else {

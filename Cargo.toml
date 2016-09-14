@@ -13,3 +13,5 @@ license = "MIT"
 
 [dependencies]
 libudev = "~0.2"
+regex = "~0.1"
+uuid = "~0.3"
