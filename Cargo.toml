@@ -8,7 +8,7 @@ description = "Utilities to work with block devices.  Formatting, getting device
 documentation = ""
 homepage = "https://github.com/cholcombe973/block-utils"
 repository = "https://github.com/cholcombe973/block-utils"
-readme = "https://github.com/cholcombe973/block-utils/blob/master/README.md"
+readme = "README.md"
 license = "MIT"
 
 [dependencies]
