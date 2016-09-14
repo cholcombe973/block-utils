@@ -1,10 +1,11 @@
 [package]
 name = "block-utils"
-version = "0.1.0"
+version = "0.1.1"
 authors = ["Chris Holcombe <xfactor973@gmail.com>"]
 description = "Utilities to work with block devices.  Formatting, getting device info, identifying type of device, etc."
 
 # These URLs point to more information about the repository.
+documentation = "https://docs.rs/block-utils"
 homepage = "https://github.com/cholcombe973/block-utils"
 repository = "https://github.com/cholcombe973/block-utils"
 readme = "README.md"
