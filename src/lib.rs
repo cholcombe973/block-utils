@@ -11,6 +11,7 @@ use std::path::PathBuf;
 use std::process::{Command, Output};
 
 // Formats a block device at Path p with XFS
+/// This is used for formatting btrfs filesystems and setting the metadata profile
 #[derive(Clone, Debug)]
 pub enum MetadataProfile {
     Raid0,
@@ -23,6 +24,7 @@ pub enum MetadataProfile {
 }
 
 // This will be used to make intelligent decisions about setting up the device
+/// Device information that is gathered with udev
 #[derive(Debug)]
 pub struct Device {
     pub id: Option<Uuid>,
@@ -32,14 +34,19 @@ pub struct Device {
     pub fs_type: FilesystemType,
 }
 
+/// What type of media has been detected.
 #[derive(Debug)]
 pub enum MediaType {
+    /// AKA SSD
     SolidState,
+    /// Regular rotational disks
     Rotational,
+    /// Special loopback device
     Loopback,
     Unknown,
 }
 
+/// What type of filesystem
 #[derive(Debug)]
 pub enum FilesystemType {
     Btrfs,
@@ -73,6 +80,7 @@ impl MetadataProfile {
     }
 }
 
+/// This allows you to tweak some settings when you're formatting the filesystem
 #[derive(Debug)]
 pub enum Filesystem {
     Btrfs {
@@ -85,14 +93,15 @@ pub enum Filesystem {
         reserved_blocks_percentage: u8,
     },
     Xfs {
-        // This is optional.  Boost knobs are on by default:
-        // http://xfs.org/index.php/XFS_FAQ#Q:_I_want_to_tune_my_XFS_filesystems_for_.3Csomething.3E
+        /// This is optional.  Boost knobs are on by default:
+        /// http://xfs.org/index.php/XFS_FAQ#Q:_I_want_to_tune_my_XFS_filesystems_for_.3Csomething.3E
         inode_size: Option<u64>,
         force: bool,
     },
 }
 
 impl Filesystem {
+    /// Create a new Filesystem with defaults.
     pub fn new(name: &str) -> Filesystem {
         match name.trim() {
             // Defaults.  Can be changed as needed by the caller
@@ -153,7 +162,9 @@ fn install_utils() -> Result<i32, String> {
     return process_output(run_command("/usr/bin/apt-get", &arg_list, true));
 }
 
-// This assumes the device is formatted at this point
+/// Utility function to mount a device at a mount point
+/// NOTE: This assumes the device is formatted at this point.  The mount
+/// will fail if the device isn't formatted.
 pub fn mount_device(device: &Device, mount_point: &str) -> Result<i32, String> {
     let mut arg_list: Vec<String> = Vec::new();
     match device.id {
@@ -195,6 +206,7 @@ fn process_output(output: Output) -> Result<i32, String> {
     }
 }
 
+/// Utility to format a block device with a given filesystem.
 pub fn format_block_device(device: &PathBuf, filesystem: &Filesystem) -> Result<i32, String> {
     match filesystem {
         &Filesystem::Btrfs { ref metadata_profile, ref leaf_size, ref node_size } => {
@@ -332,6 +344,7 @@ fn get_media_type(device: &libudev::Device) -> MediaType {
     }
 }
 
+/// Checks to see if the subsystem this device is using is block
 pub fn is_block_device(device_path: &PathBuf) -> Result<bool, String> {
     let context = try!(libudev::Context::new().map_err(|e| e.to_string()));
     let mut enumerator = try!(libudev::Enumerator::new(&context).map_err(|e| e.to_string()));
@@ -351,7 +364,7 @@ pub fn is_block_device(device_path: &PathBuf) -> Result<bool, String> {
     return Err(format!("Unable to find device with name {:?}", device_path));
 }
 
-// Tries to figure out what type of device this is
+/// Returns device information that is gathered with udev.
 pub fn get_device_info(device_path: &PathBuf) -> Result<Device, String> {
     let context = try!(libudev::Context::new().map_err(|e| e.to_string()));
     let mut enumerator = try!(libudev::Enumerator::new(&context).map_err(|e| e.to_string()));
