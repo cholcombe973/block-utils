@@ -1,0 +1,15 @@
+[package]
+name = "block-utils"
+version = "0.1.0"
+authors = ["Chris Holcombe <xfactor973@gmail.com>"]
+description = ""
+
+# These URLs point to more information about the repository.
+documentation = ""
+homepage = ""
+repository = ""
+readme = ""
+license = "MIT"
+
+[dependencies]
+libudev = "*"
