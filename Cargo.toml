@@ -1,6 +1,6 @@
 [package]
 name = "block-utils"
-version = "0.1.1"
+version = "0.2.0"
 authors = ["Chris Holcombe <xfactor973@gmail.com>"]
 description = "Utilities to work with block devices.  Formatting, getting device info, identifying type of device, etc."
 
@@ -14,4 +14,5 @@ license = "MIT"
 [dependencies]
 libudev = "~0.2"
 regex = "~0.1"
+shellscript = "~0.3"
 uuid = "~0.3"

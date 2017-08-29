@@ -1,14 +1,18 @@
 extern crate libudev;
 extern crate regex;
+extern crate shellscript;
 extern crate uuid;
 
 use regex::Regex;
 use uuid::Uuid;
 
+use std::ffi::OsStr;
+use std::fmt;
 use std::fs;
-use std::io::ErrorKind;
-use std::path::PathBuf;
-use std::process::{Command, Output};
+use std::io::{ErrorKind, Read, Write};
+use std::path::{Path, PathBuf};
+use std::process::{Child, Command, Output};
+use std::str::FromStr;
 
 // Formats a block device at Path p with XFS
 /// This is used for formatting btrfs filesystems and setting the metadata profile
@@ -34,6 +38,51 @@ pub struct Device {
     pub fs_type: FilesystemType,
 }
 
+#[derive(Debug)]
+pub struct AsyncInit {
+    /// The child process needed for this device initializati
+    /// This will be an async spawned Child handle
+    pub format_child: Child,
+    /// After formatting is complete run these commands to se
+    /// ZFS needs this.  These should prob be run in sync mod
+    pub post_setup_commands: Vec<(String, Vec<String>)>,
+    /// The device we're initializing
+    pub device: PathBuf,
+}
+
+#[derive(Debug)]
+pub enum Scheduler {
+    /// Try to balance latency and throughput
+    Cfq,
+    /// Latency is most important
+    Deadline,
+    /// Throughput is most important
+    Noop,
+}
+
+impl fmt::Display for Scheduler {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        let s = match self {
+            &Scheduler::Cfq => "cfq",
+            &Scheduler::Deadline => "deadline",
+            &Scheduler::Noop => "noop",
+        };
+        write!(f, "{}", s)
+    }
+}
+
+impl FromStr for Scheduler {
+    type Err = String;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "cfq" => Ok(Scheduler::Cfq),
+            "deadline" => Ok(Scheduler::Deadline),
+            "noop" => Ok(Scheduler::Noop),
+            _ => Err(format!("Unknown scheduler {}", s)),
+        }
+    }
+}
+
 /// What type of media has been detected.
 #[derive(Debug)]
 pub enum MediaType {
@@ -43,6 +92,7 @@ pub enum MediaType {
     Rotational,
     /// Special loopback device
     Loopback,
+    Virtual,
     Unknown,
 }
 
@@ -50,8 +100,11 @@ pub enum MediaType {
 #[derive(Debug)]
 pub enum FilesystemType {
     Btrfs,
+    Ext2,
+    Ext3,
     Ext4,
     Xfs,
+    Zfs,
     Unknown,
 }
 
@@ -59,9 +112,34 @@ impl FilesystemType {
     pub fn from_str(fs_type: &str) -> FilesystemType {
         match fs_type {
             "btrfs" => FilesystemType::Btrfs,
+            "ext2" => FilesystemType::Ext2,
+            "ext3" => FilesystemType::Ext3,
             "ext4" => FilesystemType::Ext4,
             "xfs" => FilesystemType::Xfs,
+            "zfs" => FilesystemType::Zfs,
             _ => FilesystemType::Unknown,
+        }
+    }
+    pub fn to_str(&self) -> &str {
+        match self {
+            &FilesystemType::Btrfs => "btrfs",
+            &FilesystemType::Ext2 => "ext2",
+            &FilesystemType::Ext3 => "ext3",
+            &FilesystemType::Ext4 => "ext4",
+            &FilesystemType::Xfs => "xfs",
+            &FilesystemType::Zfs => "zfs",
+            &FilesystemType::Unknown => "unknown",
+        }
+    }
+    pub fn to_string(&self) -> String {
+        match self {
+            &FilesystemType::Btrfs => "btrfs".to_string(),
+            &FilesystemType::Ext2 => "ext2".to_string(),
+            &FilesystemType::Ext3 => "ext3".to_string(),
+            &FilesystemType::Ext4 => "ext4".to_string(),
+            &FilesystemType::Xfs => "xfs".to_string(),
+            &FilesystemType::Zfs => "zfs".to_string(),
+            &FilesystemType::Unknown => "unknown".to_string(),
         }
     }
 }
@@ -84,30 +162,52 @@ impl MetadataProfile {
 #[derive(Debug)]
 pub enum Filesystem {
     Btrfs {
-        metadata_profile: MetadataProfile,
         leaf_size: u64,
+        metadata_profile: MetadataProfile,
         node_size: u64,
     },
     Ext4 {
         inode_size: u64,
         reserved_blocks_percentage: u8,
+        stride: Option<u64>,
+        stripe_width: Option<u64>,
     },
     Xfs {
         /// This is optional.  Boost knobs are on by default:
-        /// http://xfs.org/index.php/XFS_FAQ#Q:_I_want_to_tune_my_XFS_filesystems_for_.3Csomething.3E
-        inode_size: Option<u64>,
+        /// http://xfs.org/index.php/XFS_FAQ#Q:_I_want_to_tune_my_XFS_filesystems_
+        /// for_.3Csomething.3E
+        block_size: Option<u64>, // Note this MUST be a power of 2
         force: bool,
+        inode_size: Option<u64>,
+        stripe_size: Option<u64>, // RAID controllers stripe
+        stripe_width: Option<u64>, // IE # of data disks
+    },
+    Zfs {
+        /// The default blocksize for volumes is 8 Kbytes. An
+        /// power of 2 from 512 bytes to 128 Kbytes is valid.
+        block_size: Option<u64>,
+        /// Enable compression on the volume. Default is fals
+        compression: Option<bool>,
     },
 }
 
+
 impl Filesystem {
-    /// Create a new Filesystem with defaults.
     pub fn new(name: &str) -> Filesystem {
         match name.trim() {
             // Defaults.  Can be changed as needed by the caller
+            "zfs" => {
+                Filesystem::Zfs {
+                    block_size: None,
+                    compression: None,
+                }
+            }
             "xfs" => {
                 Filesystem::Xfs {
-                    inode_size: None,
+                    stripe_size: None,
+                    stripe_width: None,
+                    block_size: None,
+                    inode_size: Some(512),
                     force: false,
                 }
             }
@@ -120,12 +220,17 @@ impl Filesystem {
             }
             "ext4" => {
                 Filesystem::Ext4 {
-                    inode_size: 256,
+                    inode_size: 512,
                     reserved_blocks_percentage: 0,
+                    stride: None,
+                    stripe_width: None,
                 }
             }
             _ => {
                 Filesystem::Xfs {
+                    stripe_size: None,
+                    stripe_width: None,
+                    block_size: None,
                     inode_size: None,
                     force: false,
                 }
@@ -134,32 +239,13 @@ impl Filesystem {
     }
 }
 
-fn run_command(command: &str, arg_list: &Vec<String>, as_root: bool) -> Output {
-    if as_root {
-        let mut cmd = Command::new("sudo");
-        cmd.arg(command);
-        for arg in arg_list {
-            cmd.arg(&arg);
-        }
-        let output = cmd.output().unwrap_or_else(|e| panic!("failed to execute process: {} ", e));
-        return output;
-    } else {
-        let mut cmd = Command::new(command);
-        for arg in arg_list {
-            cmd.arg(&arg);
-        }
-        let output = cmd.output().unwrap_or_else(|e| panic!("failed to execute process: {} ", e));
-        return output;
-    }
-}
-
-// Install xfsprogs, btrfs-tools, etc for mkfs to succeed
-fn install_utils() -> Result<i32, String> {
-    let arg_list = vec!["install".to_string(),
-                        "-y".to_string(),
-                        "btrfs-tools".to_string(),
-                        "xfsprogs".to_string()];
-    return process_output(run_command("/usr/bin/apt-get", &arg_list, true));
+fn run_command<S: AsRef<OsStr>>(command: &str, arg_list: &[S]) -> Output {
+    let mut cmd = Command::new(command);
+    cmd.args(arg_list);
+    let output = cmd.output().unwrap_or_else(
+        |e| panic!("failed to execute process: {} ", e),
+    );
+    return output;
 }
 
 /// Utility function to mount a device at a mount point
@@ -176,25 +262,9 @@ pub fn mount_device(device: &Device, mount_point: &str) -> Result<i32, String> {
             arg_list.push(format!("/dev/{}", device.name));
         }
     };
-    // arg_list.push("-t".to_string());
-    // match device.fs_type{
-    // FilesystemType::Btrfs => {
-    // arg_list.push("btrfs".to_string());
-    // },
-    // FilesystemType::Ext4 => {
-    // arg_list.push("ext4".to_string());
-    // },
-    // FilesystemType::Xfs => {
-    // arg_list.push("xfs".to_string());
-    // },
-    // FilesystemType::Unknown => {
-    // return Err("Unable to mount unknown filesystem type".to_string());
-    // }
-    // };
-    //
     arg_list.push(mount_point.to_string());
 
-    return process_output(run_command("mount", &arg_list, true));
+    return process_output(run_command("mount", &arg_list));
 }
 
 fn process_output(output: Output) -> Result<i32, String> {
@@ -206,10 +276,16 @@ fn process_output(output: Output) -> Result<i32, String> {
     }
 }
 
-/// Utility to format a block device with a given filesystem.
+/// Synchronous utility to format a block device with a given filesystem.
+/// Note: ZFS creation can be slow because there's potentially several commands that need to
+/// be run.  async_format_block_device will be faster if you have many block devices to format
 pub fn format_block_device(device: &PathBuf, filesystem: &Filesystem) -> Result<i32, String> {
     match filesystem {
-        &Filesystem::Btrfs { ref metadata_profile, ref leaf_size, ref node_size } => {
+        &Filesystem::Btrfs {
+            ref metadata_profile,
+            ref leaf_size,
+            ref node_size,
+        } => {
             let mut arg_list: Vec<String> = Vec::new();
 
             arg_list.push("-m".to_string());
@@ -222,21 +298,19 @@ pub fn format_block_device(device: &PathBuf, filesystem: &Filesystem) -> Result<
             arg_list.push(node_size.to_string());
 
             arg_list.push(device.to_string_lossy().to_string());
-            // Check if mkfs.xfs is installed
-            match fs::metadata("/sbin/mkfs.btrfs") {
-                Ok(_) => {}
-                Err(e) => {
-                    match e.kind() {
-                        ErrorKind::NotFound => {
-                            try!(install_utils());
-                        }
-                        _ => {}
-                    }
-                }
+            // Check if mkfs.btrfs is installed
+            if !Path::new("/sbin/mkfs.btrfs").exists() {
+                return Err("Please install btrfs-tools".into());
             }
-            return process_output(run_command("mkfs.btrfs", &arg_list, true));
+            return process_output(run_command("mkfs.btrfs", &arg_list));
         }
-        &Filesystem::Xfs { ref inode_size, ref force } => {
+        &Filesystem::Xfs {
+            ref inode_size,
+            ref force,
+            ref block_size,
+            ref stripe_size,
+            ref stripe_width,
+        } => {
             let mut arg_list: Vec<String> = Vec::new();
 
             if (*inode_size).is_some() {
@@ -251,20 +325,17 @@ pub fn format_block_device(device: &PathBuf, filesystem: &Filesystem) -> Result<
             arg_list.push(device.to_string_lossy().to_string());
 
             // Check if mkfs.xfs is installed
-            match fs::metadata("/sbin/mkfs.xfs") {
-                Ok(_) => {}
-                Err(e) => {
-                    match e.kind() {
-                        ErrorKind::NotFound => {
-                            try!(install_utils());
-                        }
-                        _ => {}
-                    }
-                }
+            if !Path::new("/sbin/mkfs.xfs").exists() {
+                return Err("Please install xfsprogs".into());
             }
-            return process_output(run_command("/sbin/mkfs.xfs", &arg_list, true));
+            return process_output(run_command("/sbin/mkfs.xfs", &arg_list));
         }
-        &Filesystem::Ext4 { ref inode_size, ref reserved_blocks_percentage } => {
+        &Filesystem::Ext4 {
+            ref inode_size,
+            ref reserved_blocks_percentage,
+            ref stride,
+            ref stripe_width,
+        } => {
             let mut arg_list: Vec<String> = Vec::new();
 
             arg_list.push("-I".to_string());
@@ -275,7 +346,259 @@ pub fn format_block_device(device: &PathBuf, filesystem: &Filesystem) -> Result<
 
             arg_list.push(device.to_string_lossy().to_string());
 
-            return process_output(run_command("mkfs.ext4", &arg_list, true));
+            return process_output(run_command("mkfs.ext4", &arg_list));
+        }
+        &Filesystem::Zfs {
+            ref block_size,
+            ref compression,
+        } => {
+            // Check if zfs is installed
+            if !Path::new("/sbin/zfs").exists() {
+                return Err("Please install zfsutils-linux".into());
+            }
+            let base_name = device.file_name();
+            match base_name {
+                Some(name) => {
+                    //Mount at /mnt/{dev_name}
+                    let arg_list: Vec<String> =
+                        vec![
+                            "create".to_string(),
+                            "-f".to_string(),
+                            "-m".to_string(),
+                            format!("/mnt/{}", name.to_string_lossy().into_owned()),
+                            name.to_string_lossy().into_owned(),
+                            device.to_string_lossy().into_owned(),
+                        ];
+                    // Create the zpool
+                    let _ = process_output(run_command("/sbin/zpool", &arg_list))?;
+                    if block_size.is_some() {
+                        // If zpool creation is successful then we set these
+                        let _ = process_output(run_command(
+                            "/sbin/zfs",
+                            &vec![
+                                "set".to_string(),
+                                format!("recordsize={}", block_size.unwrap()),
+                                name.to_string_lossy().into_owned(),
+                            ],
+                        ))?;
+                    }
+                    if compression.is_some() {
+                        let _ = process_output(run_command(
+                            "/sbin/zfs",
+                            &vec![
+                                "set".to_string(),
+                                "compression=on".to_string(),
+                                name.to_string_lossy().into_owned(),
+                            ],
+                        ))?;
+                    }
+                    let _ = process_output(run_command(
+                        "/sbin/zfs",
+                        &vec![
+                            "set".to_string(),
+                            "acltype=posixacl".to_string(),
+                            name.to_string_lossy().into_owned(),
+                        ],
+                    ))?;
+                    let _ = process_output(run_command(
+                        "/sbin/zfs",
+                        &vec![
+                            "set".to_string(),
+                            "atime=off".to_string(),
+                            name.to_string_lossy().into_owned(),
+                        ],
+                    ))?;
+                    return Ok(0);
+                }
+                None => Err(format!(
+                    "Unable to determine filename for device: {:?}",
+                    device
+                )),
+            }
+        }
+
+    }
+}
+pub fn async_format_block_device(
+    device: &PathBuf,
+    filesystem: &Filesystem,
+) -> Result<AsyncInit, String> {
+    match filesystem {
+        &Filesystem::Btrfs {
+            ref metadata_profile,
+            ref leaf_size,
+            ref node_size,
+        } => {
+            let arg_list: Vec<String> = vec![
+                "-m".to_string(),
+                metadata_profile.clone().to_string(),
+                "-l".to_string(),
+                leaf_size.to_string(),
+                "-n".to_string(),
+                node_size.to_string(),
+                device.to_string_lossy().to_string(),
+            ];
+            // Check if mkfs.btrfs is installed
+            if !Path::new("/sbin/mkfs.btrfs").exists() {
+                return Err("Please install btrfs-tools".into());
+            }
+            return Ok(AsyncInit {
+                format_child: Command::new("mkfs.btrfs").args(&arg_list).spawn().map_err(
+                    |e| {
+                        e.to_string()
+                    },
+                )?,
+                post_setup_commands: vec![],
+                device: device.clone(),
+            });
+        }
+        &Filesystem::Xfs {
+            ref block_size,
+            ref inode_size,
+            ref stripe_size,
+            ref stripe_width,
+            ref force,
+        } => {
+            let mut arg_list: Vec<String> = Vec::new();
+
+            if (*inode_size).is_some() {
+                arg_list.push("-i".to_string());
+                arg_list.push(format!("size={}", inode_size.unwrap()));
+            }
+
+            if *force {
+                arg_list.push("-f".to_string());
+            }
+
+            if (*stripe_size).is_some() && (*stripe_width).is_some() {
+                arg_list.push("-d".to_string());
+                arg_list.push(format!("su={}", stripe_size.unwrap()));
+                arg_list.push(format!("sw={}", stripe_width.unwrap()));
+            }
+
+            arg_list.push(device.to_string_lossy().to_string());
+
+            // Check if mkfs.xfs is installed
+            if !Path::new("/sbin/mkfs.xfs").exists() {
+                return Err("Please install xfsprogs".into());
+            }
+            let format_handle = Command::new("/sbin/mkfs.xfs")
+                .args(&arg_list)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            return Ok(AsyncInit {
+                format_child: format_handle,
+                post_setup_commands: vec![],
+                device: device.clone(),
+            });
+        }
+        &Filesystem::Zfs {
+            ref block_size,
+            ref compression,
+        } => {
+            // Check if zfs is installed
+            if !Path::new("/sbin/zfs").exists() {
+                return Err("Please install zfsutils-linux".into());
+            }
+            let base_name = device.file_name();
+            match base_name {
+                Some(name) => {
+                    //Mount at /mnt/{dev_name}
+                    let mut post_setup_commands: Vec<(String, Vec<String>)> = Vec::new();
+                    let arg_list: Vec<String> =
+                        vec![
+                            "create".to_string(),
+                            "-f".to_string(),
+                            "-m".to_string(),
+                            format!("/mnt/{}", name.to_string_lossy().into_owned()),
+                            name.to_string_lossy().into_owned(),
+                            device.to_string_lossy().into_owned(),
+                        ];
+                    let zpool_create = Command::new("/sbin/zpool")
+                        .args(&arg_list)
+                        .spawn()
+                        .map_err(|e| e.to_string())?;
+
+                    if block_size.is_some() {
+                        // If zpool creation is successful then we set these
+                        post_setup_commands.push((
+                            "/sbin/zfs".to_string(),
+                            vec![
+                                "set".to_string(),
+                                format!("recordsize={}", block_size.unwrap()),
+                                name.to_string_lossy().into_owned(),
+                            ],
+                        ));
+                    }
+                    if compression.is_some() {
+                        post_setup_commands.push((
+                            "/sbin/zfs".to_string(),
+                            vec![
+                                "set".to_string(),
+                                "compression=on".to_string(),
+                                name.to_string_lossy().into_owned(),
+                            ],
+                        ));
+                    }
+                    post_setup_commands.push((
+                        "/sbin/zfs".to_string(),
+                        vec![
+                            "set".to_string(),
+                            "acltype=posixacl".to_string(),
+                            name.to_string_lossy().into_owned(),
+                        ],
+                    ));
+                    post_setup_commands.push((
+                        "/sbin/zfs".to_string(),
+                        vec![
+                            "set".to_string(),
+                            "atime=off".to_string(),
+                            name.to_string_lossy().into_owned(),
+                        ],
+                    ));
+                    return Ok(AsyncInit {
+                        format_child: zpool_create,
+                        post_setup_commands: post_setup_commands,
+                        device: device.clone(),
+                    });
+                }
+                None => Err(format!(
+                    "Unable to determine filename for device: {:?}",
+                    device
+                )),
+            }
+        }
+        &Filesystem::Ext4 {
+            ref inode_size,
+            ref reserved_blocks_percentage,
+            ref stride,
+            ref stripe_width,
+        } => {
+            let mut arg_list: Vec<String> =
+                vec!["-m".to_string(), reserved_blocks_percentage.to_string()];
+
+            arg_list.push("-I".to_string());
+            arg_list.push(inode_size.to_string());
+
+            if (*stride).is_some() {
+                arg_list.push("-E".to_string());
+                arg_list.push(format!("stride={}", stride.unwrap()));
+            }
+            if (*stripe_width).is_some() {
+                arg_list.push("-E".to_string());
+                arg_list.push(format!("stripe_width={}", stripe_width.unwrap()));
+            }
+            arg_list.push(device.to_string_lossy().into_owned());
+
+            return Ok(AsyncInit {
+                format_child: Command::new("mkfs.ext4").args(&arg_list).spawn().map_err(
+                    |e| {
+                        e.to_string()
+                    },
+                )?,
+                post_setup_commands: vec![],
+                device: device.clone(),
+            });
         }
     }
 }
@@ -340,18 +663,34 @@ fn get_media_type(device: &libudev::Device) -> MediaType {
                 return MediaType::Rotational;
             }
         }
-        None => return MediaType::Unknown,
+        None => {
+            match device.property_value("ID_VENDOR") {
+                Some(s) => {
+                    let value = s.to_string_lossy();
+                    match value.as_ref() {
+                        "QEMU" => return MediaType::Virtual,
+                        _ => return MediaType::Unknown,
+                    }
+                }
+                None => return MediaType::Unknown,
+            }
+        }
     }
 }
+
 
 /// Checks to see if the subsystem this device is using is block
 pub fn is_block_device(device_path: &PathBuf) -> Result<bool, String> {
     let context = try!(libudev::Context::new().map_err(|e| e.to_string()));
-    let mut enumerator = try!(libudev::Enumerator::new(&context).map_err(|e| e.to_string()));
+    let mut enumerator = try!(libudev::Enumerator::new(&context).map_err(
+        |e| e.to_string(),
+    ));
     let devices = try!(enumerator.scan_devices().map_err(|e| e.to_string()));
 
-    let sysname = try!(device_path.file_name()
-        .ok_or(format!("Unable to get file_name on device {:?}", device_path)));
+    let sysname = try!(device_path.file_name().ok_or(format!(
+        "Unable to get file_name on device {:?}",
+        device_path
+    )));
 
     for device in devices {
         if sysname == device.sysname() {
@@ -367,11 +706,15 @@ pub fn is_block_device(device_path: &PathBuf) -> Result<bool, String> {
 /// Returns device information that is gathered with udev.
 pub fn get_device_info(device_path: &PathBuf) -> Result<Device, String> {
     let context = try!(libudev::Context::new().map_err(|e| e.to_string()));
-    let mut enumerator = try!(libudev::Enumerator::new(&context).map_err(|e| e.to_string()));
+    let mut enumerator = try!(libudev::Enumerator::new(&context).map_err(
+        |e| e.to_string(),
+    ));
     let devices = try!(enumerator.scan_devices().map_err(|e| e.to_string()));
 
-    let sysname = try!(device_path.file_name()
-        .ok_or(format!("Unable to get file_name on device {:?}", device_path)));
+    let sysname = try!(device_path.file_name().ok_or(format!(
+        "Unable to get file_name on device {:?}",
+        device_path
+    )));
 
     for device in devices {
         if sysname == device.sysname() {
@@ -397,4 +740,79 @@ pub fn get_device_info(device_path: &PathBuf) -> Result<Device, String> {
         }
     }
     return Err(format!("Unable to find device with name {:?}", device_path));
+}
+pub fn set_elevator(
+    device_path: &PathBuf,
+    elevator: &Scheduler,
+) -> Result<usize, ::std::io::Error> {
+    let device_name = match device_path.file_name() {
+        Some(name) => name.to_string_lossy().into_owned(),
+        None => "".to_string(),
+    };
+    let mut f = fs::File::open("/etc/rc.local")?;
+    let elevator_cmd = format!(
+        "echo {scheduler} > /sys/block/{device}/queue/scheduler",
+        scheduler = elevator,
+        device = device_name
+    );
+
+    let mut script = shellscript::parse(&mut f)?;
+    let existing_cmd = script.commands.iter().position(
+        |cmd| cmd.contains(&device_name),
+    );
+    if let Some(pos) = existing_cmd {
+        script.commands.remove(pos);
+    }
+    script.commands.push(elevator_cmd);
+    let mut f = fs::File::create("/etc/rc.local")?;
+    let bytes_written = script.write(&mut f)?;
+    Ok(bytes_written)
+}
+
+pub fn weekly_defrag(
+    mount: &str,
+    fs_type: &FilesystemType,
+    interval: &str,
+) -> Result<usize, ::std::io::Error> {
+    let crontab = Path::new("/var/spool/cron/crontabs/root");
+    let defrag_command = match fs_type {
+        &FilesystemType::Ext4 => "e4defrag",
+        &FilesystemType::Btrfs => "btrfs filesystem defragment -r",
+        &FilesystemType::Xfs => "xfs_fsr",
+        _ => "",
+    };
+    let job = format!(
+        "{interval} {cmd} {path}",
+        interval = interval,
+        cmd = defrag_command,
+        path = mount
+    );
+
+    //TODO Change over to using the cronparse library.  Has much better parsing however
+    //there's currently no way to add new entries yet
+    let mut existing_crontab = {
+        if crontab.exists() {
+            let mut buff = String::new();
+            let mut f = fs::File::open("/var/spool/cron/crontabs/root")?;
+            f.read_to_string(&mut buff)?;
+            buff.split("\n")
+                .map(|s| s.to_string())
+                .collect::<Vec<String>>()
+        } else {
+            Vec::new()
+        }
+    };
+    let existing_job_position = existing_crontab.iter().position(
+        |line| line.contains(mount),
+    );
+    // If we found an existing job we remove the old and insert the new job
+    if let Some(pos) = existing_job_position {
+        existing_crontab.remove(pos);
+    }
+    existing_crontab.push(job.clone());
+
+    //Write back out
+    let mut f = fs::File::create("/var/spool/cron/crontabs/root")?;
+    let written_bytes = f.write(&existing_crontab.join("\n").as_bytes())?;
+    Ok(written_bytes)
 }
