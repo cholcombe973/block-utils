@@ -9,7 +9,7 @@ use uuid::Uuid;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io::{ErrorKind, Read, Write};
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
 use std::str::FromStr;
@@ -25,6 +25,13 @@ pub enum MetadataProfile {
     Raid10,
     Single,
     Dup,
+}
+
+/// What raid card if any the system is using to serve disks
+#[derive(Debug)]
+pub enum RaidType {
+    None,
+    Lsi,
 }
 
 // This will be used to make intelligent decisions about setting up the device
@@ -701,6 +708,20 @@ pub fn is_block_device(device_path: &PathBuf) -> Result<bool, String> {
     }
 
     return Err(format!("Unable to find device with name {:?}", device_path));
+}
+
+/// Detects the RAID card in use
+pub fn get_raid_info() -> Result<RaidType, String> {
+    // TODO: This is brute force and ugly.  There's likely a more elegant way
+    let mut f = fs::File::open("/proc/scsi/scsi").map_err(|e| e.to_string())?;
+    let mut buff = String::new();
+    f.read_to_string(&mut buff).map_err(|e| e.to_string())?;
+    for line in buff.lines() {
+        if line.contains("LSI") {
+            return Ok(RaidType::Lsi);
+        }
+    }
+    Ok(RaidType::None)
 }
 
 /// Returns device information that is gathered with udev.
