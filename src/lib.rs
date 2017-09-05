@@ -11,6 +11,7 @@ use std::fmt;
 use std::fs;
 use std::io::{BufReader, BufRead, Read, Write};
 use std::io;
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
 use std::str::FromStr;
@@ -714,6 +715,30 @@ fn get_media_type(device: &libudev::Device) -> MediaType {
     }
 }
 
+/// Checks and returns if a particular directory is a mountpoint
+pub fn is_mounted(directory: &Path) -> Result<bool, String> {
+    let parent = directory.parent();
+
+    let dir_metadata = try!(fs::metadata(directory).map_err(|e| e.to_string()));
+    let file_type = dir_metadata.file_type();
+
+    if file_type.is_symlink() {
+        // A symlink can never be a mount point
+        return Ok(false);
+    }
+
+    if parent.is_some() {
+        let parent_metadata = try!(fs::metadata(parent.unwrap()).map_err(|e| e.to_string()));
+        if parent_metadata.dev() != dir_metadata.dev() {
+            // path/.. on a different device as path
+            return Ok(true);
+        }
+    } else {
+        // If the directory doesn't have a parent it's the root filesystem
+        return Ok(false);
+    }
+    return Ok(false);
+}
 
 /// Checks to see if the subsystem this device is using is block
 pub fn is_block_device(device_path: &PathBuf) -> Result<bool, String> {
