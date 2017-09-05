@@ -9,7 +9,8 @@ use uuid::Uuid;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs;
-use std::io::{Read, Write};
+use std::io::{BufReader, BufRead, Read, Write};
+use std::io;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
 use std::str::FromStr;
@@ -272,6 +273,34 @@ pub fn mount_device(device: &Device, mount_point: &str) -> Result<i32, String> {
     arg_list.push(mount_point.to_string());
 
     return process_output(run_command("mount", &arg_list));
+}
+
+//Utility function to unmount a device at a mount point
+pub fn unmount_device(mount_point: &str) -> Result<i32, String> {
+    let mut arg_list: Vec<String> = Vec::new();
+    arg_list.push(mount_point.to_string());
+
+    return process_output(run_command("umount", &arg_list));
+}
+
+/// Parse mtab and return the device which is mounted at a given directory
+pub fn get_mount_device(mount_dir: &Path) -> io::Result<Option<PathBuf>> {
+    let dir = mount_dir.to_string_lossy().into_owned();
+    let mut f = fs::File::open("/etc/mtab")?;
+    let mut reader = BufReader::new(f);
+
+    //let mut line = String::new();
+    for line in reader.lines() {
+        let l = line?;
+        if l.contains(&dir) {
+            let parts: Vec<&str> = l.split_whitespace().collect();
+            if parts.len() > 0 {
+                return Ok(Some(PathBuf::from(parts[0])));
+            }
+        }
+    }
+
+    Ok(None)
 }
 
 fn process_output(output: Output) -> Result<i32, String> {
