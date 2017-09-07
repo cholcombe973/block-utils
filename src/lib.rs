@@ -739,6 +739,25 @@ pub fn is_mounted(directory: &Path) -> Result<bool, String> {
     }
     return Ok(false);
 }
+/// Scan a system and return all block devices that udev knows about
+pub fn get_block_devices() -> Result<Vec<PathBuf>, String> {
+    let mut block_devices: Vec<PathBuf> = Vec::new();
+    let context = try!(libudev::Context::new().map_err(|e| e.to_string()));
+    let mut enumerator = try!(libudev::Enumerator::new(&context).map_err(
+        |e| e.to_string(),
+    ));
+    let devices = try!(enumerator.scan_devices().map_err(|e| e.to_string()));
+
+    for device in devices {
+        if device.subsystem() == "block" {
+            let mut path = PathBuf::from("/dev");
+            path.push(device.sysname());
+            block_devices.push(path);
+        }
+    }
+
+    Ok(block_devices)
+}
 
 /// Checks to see if the subsystem this device is using is block
 pub fn is_block_device(device_path: &PathBuf) -> Result<bool, String> {
