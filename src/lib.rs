@@ -290,7 +290,6 @@ pub fn get_mount_device(mount_dir: &Path) -> io::Result<Option<PathBuf>> {
     let mut f = fs::File::open("/etc/mtab")?;
     let mut reader = BufReader::new(f);
 
-    //let mut line = String::new();
     for line in reader.lines() {
         let l = line?;
         if l.contains(&dir) {
@@ -310,6 +309,22 @@ fn process_output(output: Output) -> Result<i32, String> {
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
         Err(stderr)
+    }
+}
+
+pub fn erase_block_device(device: &Path) -> Result<(), String> {
+    let output = Command::new("sgdisk")
+        .args(&["--zap", &device.to_string_lossy()])
+        .output()
+        .map_err(|e| e.to_string())?;
+    if output.status.success() {
+        Ok(())
+    } else {
+        Err(format!(
+            "Disk {:?} failed to erase: {}",
+            device,
+            String::from_utf8_lossy(&output.stderr)
+        ))
     }
 }
 
