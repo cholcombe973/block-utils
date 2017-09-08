@@ -331,7 +331,7 @@ pub fn erase_block_device(device: &Path) -> Result<(), String> {
 /// Synchronous utility to format a block device with a given filesystem.
 /// Note: ZFS creation can be slow because there's potentially several commands that need to
 /// be run.  async_format_block_device will be faster if you have many block devices to format
-pub fn format_block_device(device: &PathBuf, filesystem: &Filesystem) -> Result<i32, String> {
+pub fn format_block_device(device: &Path, filesystem: &Filesystem) -> Result<i32, String> {
     match filesystem {
         &Filesystem::Btrfs {
             ref metadata_profile,
@@ -813,7 +813,7 @@ pub fn get_raid_info() -> Result<RaidType, String> {
 }
 
 /// Returns device information that is gathered with udev.
-pub fn get_device_info(device_path: &PathBuf) -> Result<Device, String> {
+pub fn get_device_info(device_path: &Path) -> Result<Device, String> {
     let context = try!(libudev::Context::new().map_err(|e| e.to_string()));
     let mut enumerator = try!(libudev::Enumerator::new(&context).map_err(
         |e| e.to_string(),
