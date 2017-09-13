@@ -38,7 +38,7 @@ pub enum RaidType {
 
 // This will be used to make intelligent decisions about setting up the device
 /// Device information that is gathered with udev
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Device {
     pub id: Option<Uuid>,
     pub name: String,
@@ -93,7 +93,7 @@ impl FromStr for Scheduler {
 }
 
 /// What type of media has been detected.
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MediaType {
     /// AKA SSD
     SolidState,
@@ -106,7 +106,7 @@ pub enum MediaType {
 }
 
 /// What type of filesystem
-#[derive(Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FilesystemType {
     Btrfs,
     Ext2,
@@ -299,7 +299,25 @@ pub fn get_mount_device(mount_dir: &Path) -> io::Result<Option<PathBuf>> {
             }
         }
     }
+    Ok(None)
+}
 
+/// Parse mtab and return the mountpoint the device is mounted at.
+/// This is the opposite of get_mount_device
+pub fn get_mountpoint(device: &Path) -> io::Result<Option<PathBuf>> {
+    let s = device.to_string_lossy().into_owned();
+    let mut f = fs::File::open("/etc/mtab")?;
+    let mut reader = BufReader::new(f);
+
+    for line in reader.lines() {
+        let l = line?;
+        if l.contains(&s) {
+            let parts: Vec<&str> = l.split_whitespace().collect();
+            if parts.len() > 0 {
+                return Ok(Some(PathBuf::from(parts[1])));
+            }
+        }
+    }
     Ok(None)
 }
 
@@ -810,6 +828,51 @@ pub fn get_raid_info() -> Result<RaidType, String> {
         }
     }
     Ok(RaidType::None)
+}
+
+/// Returns device info on every device it can find in the devices slice
+/// The device info may not be in the same order as the slice so be aware.
+/// This function is more efficient because it only call udev list once
+pub fn get_all_device_info(devices: &[PathBuf]) -> Result<Vec<Device>, String> {
+    let device_names: Vec<&OsStr> = devices
+        .into_iter()
+        .map(|d| d.file_name())
+        .filter(|d| d.is_some())
+        .map(|d| d.unwrap())
+        .collect();
+    let mut device_infos: Vec<Device> = Vec::new();
+
+    let context = try!(libudev::Context::new().map_err(|e| e.to_string()));
+    let mut enumerator = try!(libudev::Enumerator::new(&context).map_err(
+        |e| e.to_string(),
+    ));
+    let host_devices = try!(enumerator.scan_devices().map_err(|e| e.to_string()));
+
+    for device in host_devices {
+        //let sysname = PathBuf::from(device.sysname());
+        //println!("devices.contains({:?})", &sysname);
+        if device_names.contains(&device.sysname()) {
+            if device.subsystem() == "block" {
+                // Ok we're a block device
+                let id: Option<Uuid> = get_uuid(&device);
+                let media_type = get_media_type(&device);
+                let capacity = match get_size(&device) {
+                    Some(size) => size,
+                    None => 0,
+                };
+                let fs_type = get_fs_type(&device);
+
+                device_infos.push(Device {
+                    id: id,
+                    name: device.sysname().to_string_lossy().into_owned(),
+                    media_type: media_type,
+                    capacity: capacity,
+                    fs_type: fs_type,
+                });
+            }
+        }
+    }
+    return Ok(device_infos);
 }
 
 /// Returns device information that is gathered with udev.
