@@ -1,8 +1,11 @@
 extern crate libudev;
+#[macro_use]
+extern crate nom;
 extern crate regex;
 extern crate shellscript;
 extern crate uuid;
 
+use nom::{digit, is_digit, space};
 use regex::Regex;
 use uuid::Uuid;
 
@@ -14,7 +17,7 @@ use std::io;
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
-use std::str::FromStr;
+use std::str::{from_utf8, FromStr};
 
 // Formats a block device at Path p with XFS
 /// This is used for formatting btrfs filesystems and setting the metadata profile
@@ -30,10 +33,26 @@ pub enum MetadataProfile {
 }
 
 /// What raid card if any the system is using to serve disks
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub enum RaidType {
     None,
+    Cisco,
+    Hp,
     Lsi,
+}
+impl FromStr for RaidType {
+    type Err = String;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "ATA" => Ok(RaidType::None),
+            "CISCO" => Ok(RaidType::Cisco),
+            "HP" => Ok(RaidType::Hp),
+            "HPE" => Ok(RaidType::Hp),
+            "LSI" => Ok(RaidType::Lsi),
+            _ => Err(format!("Unknown Raid Vendor: {}", s)),
+        }
+    }
 }
 
 // This will be used to make intelligent decisions about setting up the device
@@ -816,18 +835,134 @@ pub fn is_block_device(device_path: &PathBuf) -> Result<bool, String> {
     return Err(format!("Unable to find device with name {:?}", device_path));
 }
 
+#[derive(Clone, Debug)]
+pub struct ScsiInfo {
+    host: String,
+    channel: u32,
+    id: u32,
+    lun: u32,
+    vendor: RaidType,
+    model: String,
+    rev: String,
+    scsi_type: String,
+    scsi_revision: u32,
+}
+
+#[test]
+fn test_scsi_parser() {
+    let mut f = fs::File::open("tests/proc_scsi").unwrap();
+    let mut s = String::new();
+    f.read_to_string(&mut s);
+    println!("scsi_host_info {:?}", scsi_host_info(s.as_bytes()));
+}
+named!(host<&str>,
+    map_res!(
+        preceded!(ws!(tag!("Host:")), take_until_and_consume!(" ")),
+        from_utf8)
+);
+
+named!(vendor<RaidType>,
+    ws!(map_res!(map_res!(
+        preceded!(ws!(tag!("Vendor:")), take_until_and_consume!(" ")),
+        from_utf8), RaidType::from_str)
+    )
+);
+
+named!(model<&str>,
+    ws!(map_res!(
+        preceded!(ws!(tag!("Model:")), take_until_and_consume!("  ")),
+        from_utf8)
+    )
+);
+
+named!(rev<&str>,
+    ws!(map_res!(
+        preceded!(ws!(tag!("Rev:")), take_until_and_consume!(" ")),
+        from_utf8)
+    )
+);
+
+named!(scsi_type<&str>,
+    ws!(map_res!(
+        preceded!(ws!(tag!("Type:")), take_until_and_consume!(" ")),
+        from_utf8)
+    )
+);
+
+named!(take_u32 <u32>,
+    map_res!(
+        map_res!(
+            take_while!(is_digit), from_utf8),
+    u32::from_str)
+);
+
+named!(channel<u32>,
+    ws!(preceded!(ws!(tag!("Channel:")), take_u32))
+);
+
+named!(scsi_id<u32>,
+    ws!(preceded!(ws!(tag!("Id:")), take_u32))
+);
+
+named!(scsi_lun<u32>,
+    ws!(preceded!(ws!(tag!("Lun:")), take_u32))
+);
+
+named!(revision<u32>,
+    ws!(preceded!(ws!(tag!("ANSI  SCSI revision:")), take_u32))
+);
+
+named!(scsi_host_info<&[u8],Vec<ScsiInfo>>,
+  many1!(do_parse!(    // the parser takes a byte array as input, and returns a Vec<ScsiInfo>
+    opt!(tag!("Attached devices:")) >>
+    host: host >>
+    channel: channel >>
+    id: scsi_id >>
+    lun: scsi_lun >>
+    scsi_vendor: vendor >>
+    scsi_model: model >>
+    scsi_rev: rev >>
+    scsi_type: scsi_type >>
+    revision: revision >>
+
+    // the final tuple will be able to use the variables defined previously
+    (ScsiInfo{
+        host: host.to_string(),
+        channel: channel,
+        id: id,
+        lun: lun,
+        vendor: scsi_vendor,
+        model: scsi_model.to_string(),
+        rev: scsi_rev.trim().to_string(),
+        scsi_type: scsi_type.to_string(),
+        scsi_revision: revision,
+    })
+ ))
+);
+
 /// Detects the RAID card in use
-pub fn get_raid_info() -> Result<RaidType, String> {
-    // TODO: This is brute force and ugly.  There's likely a more elegant way
+pub fn get_raid_info() -> Result<Vec<ScsiInfo>, String> {
     let mut f = fs::File::open("/proc/scsi/scsi").map_err(|e| e.to_string())?;
     let mut buff = String::new();
     f.read_to_string(&mut buff).map_err(|e| e.to_string())?;
-    for line in buff.lines() {
-        if line.contains("LSI") {
-            return Ok(RaidType::Lsi);
+
+    let parsed_data = match scsi_host_info(buff.as_bytes()) {
+        nom::IResult::Done(_, o) => {
+            return Ok(o);
         }
-    }
-    Ok(RaidType::None)
+        nom::IResult::Incomplete(needed) => {
+            return Err(format!(
+                "Unable to parse /proc/scsi/scsi output: {}.  Needed {:?} more bytes",
+                buff,
+                needed));
+        }
+        nom::IResult::Error(e) => {
+            return Err(format!(
+                "Unable to parse /proc/scsi/scsi output: {}.  Error {}",
+                buff,
+                e));
+        }
+    };
 }
 
 /// Returns device info on every device it can find in the devices slice

@@ -1,0 +1,88 @@
+Attached devices:
+Host: scsi6 Channel: 00 Id: 00 Lun: 00
+  Vendor: HP       Model: P440             Rev: 4.02
+  Type:   RAID                             ANSI  SCSI revision: 05
+Host: scsi6 Channel: 00 Id: 01 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi6 Channel: 00 Id: 02 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi6 Channel: 00 Id: 03 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi6 Channel: 00 Id: 04 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi6 Channel: 00 Id: 05 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi6 Channel: 00 Id: 06 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi6 Channel: 00 Id: 07 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi6 Channel: 00 Id: 08 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi6 Channel: 00 Id: 09 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi6 Channel: 00 Id: 10 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi6 Channel: 00 Id: 11 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi6 Channel: 00 Id: 12 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi6 Channel: 00 Id: 13 Lun: 00
+  Vendor: HPE      Model: Apollo 4200 LFF  Rev: 1.25
+  Type:   Enclosure                        ANSI  SCSI revision: 06
+Host: scsi7 Channel: 00 Id: 00 Lun: 00
+  Vendor: HP       Model: P840ar           Rev: 4.02
+  Type:   RAID                             ANSI  SCSI revision: 05
+Host: scsi7 Channel: 00 Id: 01 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi7 Channel: 00 Id: 02 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi7 Channel: 00 Id: 03 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi7 Channel: 00 Id: 04 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi7 Channel: 00 Id: 05 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi7 Channel: 00 Id: 06 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi7 Channel: 00 Id: 07 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi7 Channel: 00 Id: 08 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi7 Channel: 00 Id: 09 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi7 Channel: 00 Id: 10 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi7 Channel: 00 Id: 11 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi7 Channel: 00 Id: 12 Lun: 00
+  Vendor: HP       Model: MB4000JFEPB      Rev: HPD1
+  Type:   Direct-Access                    ANSI  SCSI revision: 06
+Host: scsi7 Channel: 00 Id: 13 Lun: 00
+  Vendor: HPE      Model: Apollo 4200 LFF  Rev: 1.25
+  Type:   Enclosure                        ANSI  SCSI revision: 06
+Host: scsi4 Channel: 00 Id: 00 Lun: 00
+  Vendor: ATA      Model: VK0120GFDKE      Rev: HPG0
+  Type:   Direct-Access                    ANSI  SCSI revision: 05
