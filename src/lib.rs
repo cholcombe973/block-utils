@@ -791,7 +791,11 @@ pub fn is_mounted(directory: &Path) -> Result<bool, String> {
     }
     return Ok(false);
 }
+
 /// Scan a system and return all block devices that udev knows about
+/// This function will skip udev devices identified as partition.  If
+/// it can't discover this it will error on the side of caution and
+/// return the device
 pub fn get_block_devices() -> Result<Vec<PathBuf>, String> {
     let mut block_devices: Vec<PathBuf> = Vec::new();
     let context = try!(libudev::Context::new().map_err(|e| e.to_string()));
@@ -802,9 +806,15 @@ pub fn get_block_devices() -> Result<Vec<PathBuf>, String> {
 
     for device in devices {
         if device.subsystem() == "block" {
-            let mut path = PathBuf::from("/dev");
-            path.push(device.sysname());
-            block_devices.push(path);
+            let partition = match device.devtype() {
+                Some(devtype) => if devtype == "partition" { true } else { false },
+                None => false,
+            };
+            if !partition {
+                let mut path = PathBuf::from("/dev");
+                path.push(device.sysname());
+                block_devices.push(path);
+            }
         }
     }
 
