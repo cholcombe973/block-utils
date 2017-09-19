@@ -116,10 +116,14 @@ impl FromStr for Scheduler {
 pub enum MediaType {
     /// AKA SSD
     SolidState,
-    /// Regular rotational disks
+    /// Regular rotational device
     Rotational,
     /// Special loopback device
     Loopback,
+    // Logical volume device
+    LVM,
+    // Ramdisk
+    Ram,
     Virtual,
     Unknown,
 }
@@ -738,33 +742,45 @@ fn get_fs_type(device: &libudev::Device) -> FilesystemType {
 
 fn get_media_type(device: &libudev::Device) -> MediaType {
     let device_sysname = device.sysname().to_str();
-    let loop_regex = Regex::new(r"loop\d+").unwrap();
 
+    // Test for loopback
+    let loop_regex = Regex::new(r"loop\d+").unwrap();
     if loop_regex.is_match(device_sysname.unwrap()) {
         return MediaType::Loopback;
     }
 
-    match device.property_value("ID_ATA_ROTATION_RATE_RPM") {
-        Some(value) => {
-            if value == "0" {
-                return MediaType::SolidState;
-            } else {
-                return MediaType::Rotational;
-            }
-        }
-        None => {
-            match device.property_value("ID_VENDOR") {
-                Some(s) => {
-                    let value = s.to_string_lossy();
-                    match value.as_ref() {
-                        "QEMU" => return MediaType::Virtual,
-                        _ => return MediaType::Unknown,
-                    }
-                }
-                None => return MediaType::Unknown,
-            }
+    // Test for ramdisk
+    let loop_regex = Regex::new(r"ram\d+").unwrap();
+    if loop_regex.is_match(device_sysname.unwrap()) {
+        return MediaType::Ram;
+    }
+
+    // Test for LVM
+    if let Some(device_manager) = device.property_value("DM_NAME") {
+        return MediaType::LVM;
+    }
+
+    // That should take care of the tricky ones.  Lets try to identify if it's
+    // SSD or rotational now
+    if let Some(rotation) = device.property_value("ID_ATA_ROTATION_RATE_RPM") {
+        if rotation == "0" {
+            return MediaType::SolidState;
+        } else {
+            return MediaType::Rotational;
         }
     }
+
+    // No rotation rate.  Lets see if it's a virtual qemu disk
+    if let Some(vendor) = device.property_value("ID_VENDOR") {
+        let value = vendor.to_string_lossy();
+        match value.as_ref() {
+            "QEMU" => return MediaType::Virtual,
+            _ => return MediaType::Unknown,
+        }
+    }
+
+    // I give up
+    return MediaType::Unknown;
 }
 
 /// Checks and returns if a particular directory is a mountpoint
