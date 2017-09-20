@@ -336,6 +336,7 @@ pub fn get_mounted_devices() -> io::Result<Vec<Device>> {
         .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
         .into_iter()
         .filter(|d| d.fs_spec.contains("/dev/"))
+        .filter(|d| !d.fs_spec.contains("mapper"))
         .collect();
     for d in mtab_devices {
         results.push(Device {
