@@ -1,3 +1,4 @@
+extern crate fstab;
 extern crate libudev;
 #[macro_use]
 extern crate nom;
@@ -5,6 +6,7 @@ extern crate regex;
 extern crate shellscript;
 extern crate uuid;
 
+use fstab::{FsEntry, FsTab};
 use nom::{digit, is_digit, space};
 use regex::Regex;
 use uuid::Uuid;
@@ -323,6 +325,29 @@ pub fn get_mount_device(mount_dir: &Path) -> io::Result<Option<PathBuf>> {
         }
     }
     Ok(None)
+}
+
+/// Parse mtab and return all mounted devices
+pub fn get_mounted_devices() -> io::Result<Vec<Device>> {
+    let mut results: Vec<Device> = Vec::new();
+
+    let mtab_devices: Vec<FsEntry> = FsTab::new(Path::new("/etc/mtab"))
+        .get_entries()
+        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+        .into_iter()
+        .filter(|d| d.fs_spec.contains("/dev/"))
+        .collect();
+    for d in mtab_devices {
+        results.push(Device {
+            id: None,
+            name: d.fs_spec,
+            media_type: MediaType::Unknown,
+            capacity: 0,
+            fs_type: FilesystemType::from_str(&d.vfs_type),
+        });
+    }
+
+    Ok(results)
 }
 
 /// Parse mtab and return the mountpoint the device is mounted at.
