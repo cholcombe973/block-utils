@@ -327,7 +327,7 @@ pub fn get_mount_device(mount_dir: &Path) -> io::Result<Option<PathBuf>> {
     Ok(None)
 }
 
-/// Parse mtab and return all mounted devices
+/// Parse mtab and return all mounted block devices not including LVM
 pub fn get_mounted_devices() -> io::Result<Vec<Device>> {
     let mut results: Vec<Device> = Vec::new();
 
@@ -341,7 +341,11 @@ pub fn get_mounted_devices() -> io::Result<Vec<Device>> {
     for d in mtab_devices {
         results.push(Device {
             id: None,
-            name: d.fs_spec,
+            name: Path::new(&d.fs_spec)
+                .file_name()
+                .unwrap_or(OsStr::new(""))
+                .to_string_lossy()
+                .into_owned(),
             media_type: MediaType::Unknown,
             capacity: 0,
             fs_type: FilesystemType::from_str(&d.vfs_type),
