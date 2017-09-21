@@ -440,7 +440,7 @@ pub fn format_block_device(device: &Path, filesystem: &Filesystem) -> Result<i32
 
             if (*inode_size).is_some() {
                 arg_list.push("-i".to_string());
-                arg_list.push(inode_size.unwrap().to_string());
+                arg_list.push(format!("size={}", inode_size.unwrap()));
             }
 
             if *force {
@@ -757,7 +757,7 @@ fn get_uuid(device: &libudev::Device) -> Option<Uuid> {
     }
 }
 
-fn get_serial(device: &libudev::Device) -> Option<String>{
+fn get_serial(device: &libudev::Device) -> Option<String> {
     match device.property_value("ID_SERIAL") {
         Some(value) => Some(value.to_string_lossy().into_owned()),
         None => None,
