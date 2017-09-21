@@ -1,6 +1,8 @@
 extern crate fstab;
 extern crate libudev;
 #[macro_use]
+extern crate log;
+#[macro_use]
 extern crate nom;
 extern crate regex;
 extern crate shellscript;
@@ -298,6 +300,7 @@ pub fn mount_device(device: &Device, mount_point: &str) -> Result<i32, String> {
         }
     };
     arg_list.push(mount_point.to_string());
+    debug!("mount: {:?}", arg_list);
 
     return process_output(run_command("mount", &arg_list));
 }
