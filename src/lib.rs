@@ -7,7 +7,7 @@ extern crate shellscript;
 extern crate uuid;
 
 use fstab::{FsEntry, FsTab};
-use nom::{digit, is_digit, space};
+use nom::is_digit;
 use regex::Regex;
 use uuid::Uuid;
 
@@ -66,6 +66,7 @@ pub struct Device {
     pub media_type: MediaType,
     pub capacity: u64,
     pub fs_type: FilesystemType,
+    pub serial_number: Option<String>,
 }
 
 #[derive(Debug)]
@@ -312,8 +313,8 @@ pub fn unmount_device(mount_point: &str) -> Result<i32, String> {
 /// Parse mtab and return the device which is mounted at a given directory
 pub fn get_mount_device(mount_dir: &Path) -> io::Result<Option<PathBuf>> {
     let dir = mount_dir.to_string_lossy().into_owned();
-    let mut f = fs::File::open("/etc/mtab")?;
-    let mut reader = BufReader::new(f);
+    let f = fs::File::open("/etc/mtab")?;
+    let reader = BufReader::new(f);
 
     for line in reader.lines() {
         let l = line?;
@@ -349,6 +350,7 @@ pub fn get_mounted_devices() -> io::Result<Vec<Device>> {
             media_type: MediaType::Unknown,
             capacity: 0,
             fs_type: FilesystemType::from_str(&d.vfs_type),
+            serial_number: None,
         });
     }
 
@@ -359,8 +361,8 @@ pub fn get_mounted_devices() -> io::Result<Vec<Device>> {
 /// This is the opposite of get_mount_device
 pub fn get_mountpoint(device: &Path) -> io::Result<Option<PathBuf>> {
     let s = device.to_string_lossy().into_owned();
-    let mut f = fs::File::open("/etc/mtab")?;
-    let mut reader = BufReader::new(f);
+    let f = fs::File::open("/etc/mtab")?;
+    let reader = BufReader::new(f);
 
     for line in reader.lines() {
         let l = line?;
@@ -755,6 +757,13 @@ fn get_uuid(device: &libudev::Device) -> Option<Uuid> {
     }
 }
 
+fn get_serial(device: &libudev::Device) -> Option<String>{
+    match device.property_value("ID_SERIAL") {
+        Some(value) => Some(value.to_string_lossy().into_owned()),
+        None => None,
+    }
+}
+
 fn get_fs_type(device: &libudev::Device) -> FilesystemType {
     match device.property_value("ID_FS_TYPE") {
         Some(s) => {
@@ -786,7 +795,7 @@ fn get_media_type(device: &libudev::Device) -> MediaType {
     }
 
     // Test for LVM
-    if let Some(device_manager) = device.property_value("DM_NAME") {
+    if let Some(_) = device.property_value("DM_NAME") {
         return MediaType::LVM;
     }
 
@@ -1046,6 +1055,7 @@ pub fn get_all_device_info(devices: &[PathBuf]) -> Result<Vec<Device>, String> {
             if device.subsystem() == "block" {
                 // Ok we're a block device
                 let id: Option<Uuid> = get_uuid(&device);
+                let serial = get_serial(&device);
                 let media_type = get_media_type(&device);
                 let capacity = match get_size(&device) {
                     Some(size) => size,
@@ -1059,6 +1069,7 @@ pub fn get_all_device_info(devices: &[PathBuf]) -> Result<Vec<Device>, String> {
                     media_type: media_type,
                     capacity: capacity,
                     fs_type: fs_type,
+                    serial_number: serial,
                 });
             }
         }
@@ -1085,6 +1096,7 @@ pub fn get_device_info(device_path: &Path) -> Result<Device, String> {
             if device.subsystem() == "block" {
                 // Ok we're a block device
                 let id: Option<Uuid> = get_uuid(&device);
+                let serial = get_serial(&device);
                 let media_type = get_media_type(&device);
                 let capacity = match get_size(&device) {
                     Some(size) => size,
@@ -1098,6 +1110,7 @@ pub fn get_device_info(device_path: &Path) -> Result<Device, String> {
                     media_type: media_type,
                     capacity: capacity,
                     fs_type: fs_type,
+                    serial_number: serial,
                 });
             }
         }
