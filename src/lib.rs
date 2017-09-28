@@ -787,22 +787,24 @@ fn get_fs_type(device: &libudev::Device) -> FilesystemType {
 }
 
 fn get_media_type(device: &libudev::Device) -> MediaType {
-    let device_sysname = device.sysname().to_str();
+    let device_sysname = device.sysname().to_string_lossy();
 
     // Test for loopback
-    let loop_regex = Regex::new(r"loop\d+").unwrap();
-    if loop_regex.is_match(device_sysname.unwrap()) {
-        return MediaType::Loopback;
+    if let Ok(loop_regex) = Regex::new(r"loop\d+") {
+        if loop_regex.is_match(&device_sysname) {
+            return MediaType::Loopback;
+        }
     }
 
     // Test for ramdisk
-    let loop_regex = Regex::new(r"ram\d+").unwrap();
-    if loop_regex.is_match(device_sysname.unwrap()) {
-        return MediaType::Ram;
+    if let Ok(ramdisk_regex) = Regex::new(r"ram\d+") {
+        if ramdisk_regex.is_match(&device_sysname) {
+            return MediaType::Ram;
+        }
     }
 
     // Test for nvme
-    if device_sysname.unwrap().contains("nvme") {
+    if device_sysname.contains("nvme") {
         return MediaType::NVME;
     }
 
