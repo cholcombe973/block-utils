@@ -802,7 +802,7 @@ fn get_media_type(device: &libudev::Device) -> MediaType {
     }
 
     // Test for nvme
-    if device_sysname.contains("nvme") {
+    if device_sysname.unwrap().contains("nvme") {
         return MediaType::NVME;
     }
 
