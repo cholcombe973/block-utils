@@ -8,6 +8,8 @@ extern crate regex;
 extern crate shellscript;
 extern crate uuid;
 
+pub mod nvme;
+
 use fstab::{FsEntry, FsTab};
 use nom::is_digit;
 use regex::Regex;
@@ -127,6 +129,8 @@ pub enum MediaType {
     Loopback,
     // Logical volume device
     LVM,
+    // NVM Express
+    NVME,
     // Ramdisk
     Ram,
     Virtual,
@@ -795,6 +799,11 @@ fn get_media_type(device: &libudev::Device) -> MediaType {
     let loop_regex = Regex::new(r"ram\d+").unwrap();
     if loop_regex.is_match(device_sysname.unwrap()) {
         return MediaType::Ram;
+    }
+
+    // Test for nvme
+    if device_sysname.contains("nvme") {
+        return MediaType::NVME;
     }
 
     // Test for LVM
