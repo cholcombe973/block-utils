@@ -129,6 +129,8 @@ pub enum MediaType {
     Loopback,
     // Logical volume device
     LVM,
+    // Software raid device
+    MdRaid,
     // NVM Express
     NVME,
     // Ramdisk
@@ -800,6 +802,13 @@ fn get_media_type(device: &libudev::Device) -> MediaType {
     if let Ok(ramdisk_regex) = Regex::new(r"ram\d+") {
         if ramdisk_regex.is_match(&device_sysname) {
             return MediaType::Ram;
+        }
+    }
+
+    // Test for software raid
+    if let Ok(ramdisk_regex) = Regex::new(r"md\d+") {
+        if ramdisk_regex.is_match(&device_sysname) {
+            return MediaType::MdRaid;
         }
     }
 
