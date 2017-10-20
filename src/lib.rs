@@ -224,6 +224,7 @@ pub enum Filesystem {
         inode_size: Option<u64>,
         stripe_size: Option<u64>, // RAID controllers stripe
         stripe_width: Option<u64>, // IE # of data disks
+        agcount: Option<u64>, // number of allocation  groups
     },
     Zfs {
         /// The default blocksize for volumes is 8 Kbytes. An
@@ -252,6 +253,7 @@ impl Filesystem {
                     block_size: None,
                     inode_size: Some(512),
                     force: false,
+                    agcount: Some(32),
                 }
             }
             "btrfs" => {
@@ -276,6 +278,7 @@ impl Filesystem {
                     block_size: None,
                     inode_size: None,
                     force: false,
+                    agcount: None,
                 }
             }
         }
@@ -444,6 +447,7 @@ pub fn format_block_device(device: &Path, filesystem: &Filesystem) -> Result<i32
             ref block_size,
             ref stripe_size,
             ref stripe_width,
+            ref agcount,
         } => {
             let mut arg_list: Vec<String> = Vec::new();
 
@@ -455,7 +459,14 @@ pub fn format_block_device(device: &Path, filesystem: &Filesystem) -> Result<i32
             if *force {
                 arg_list.push("-f".to_string());
             }
-
+            if (*stripe_size).is_some() && (*stripe_width).is_some() {
+                arg_list.push("-d".to_string());
+                arg_list.push(format!("su={}", stripe_size.unwrap()));
+                arg_list.push(format!("sw={}", stripe_width.unwrap()));
+                if (*agcount).is_some() {
+                    arg_list.push(format!("agcount={}", agcount.unwrap()));
+                }
+            }
             arg_list.push(device.to_string_lossy().to_string());
 
             // Check if mkfs.xfs is installed
@@ -553,6 +564,7 @@ pub fn format_block_device(device: &Path, filesystem: &Filesystem) -> Result<i32
 
     }
 }
+
 pub fn async_format_block_device(
     device: &PathBuf,
     filesystem: &Filesystem,
@@ -592,6 +604,7 @@ pub fn async_format_block_device(
             ref stripe_size,
             ref stripe_width,
             ref force,
+            ref agcount,
         } => {
             let mut arg_list: Vec<String> = Vec::new();
 
@@ -608,6 +621,9 @@ pub fn async_format_block_device(
                 arg_list.push("-d".to_string());
                 arg_list.push(format!("su={}", stripe_size.unwrap()));
                 arg_list.push(format!("sw={}", stripe_width.unwrap()));
+                if (*agcount).is_some() {
+                    arg_list.push(format!("agcount={}", agcount.unwrap()));
+                }
             }
 
             arg_list.push(device.to_string_lossy().to_string());
