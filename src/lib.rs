@@ -54,6 +54,7 @@ impl FromStr for RaidType {
             "ATA" => Ok(RaidType::None),
             "CISCO" => Ok(RaidType::Cisco),
             "HP" => Ok(RaidType::Hp),
+            "hp" => Ok(RaidType::Hp),
             "HPE" => Ok(RaidType::Hp),
             "LSI" => Ok(RaidType::Lsi),
             _ => Err(format!("Unknown Raid Vendor: {}", s)),
@@ -956,9 +957,10 @@ pub struct ScsiInfo {
 fn test_scsi_parser() {
     let mut f = fs::File::open("tests/proc_scsi").unwrap();
     let mut s = String::new();
-    f.read_to_string(&mut s);
+    f.read_to_string(&mut s).unwrap();
     println!("scsi_host_info {:?}", scsi_host_info(s.as_bytes()));
 }
+
 named!(host<&str>,
     map_res!(
         preceded!(ws!(tag!("Host:")), take_until_and_consume!(" ")),
@@ -1032,9 +1034,9 @@ named!(scsi_host_info<&[u8],Vec<ScsiInfo>>,
     // the final tuple will be able to use the variables defined previously
     (ScsiInfo{
         host: host.to_string(),
-        channel: channel,
-        id: id,
-        lun: lun,
+        channel,
+        id,
+        lun,
         vendor: scsi_vendor,
         model: scsi_model.to_string(),
         rev: scsi_rev.trim().to_string(),
@@ -1046,6 +1048,7 @@ named!(scsi_host_info<&[u8],Vec<ScsiInfo>>,
 
 /// Detects the RAID card in use
 pub fn get_raid_info() -> Result<Vec<ScsiInfo>, String> {
+
     let mut f = fs::File::open("/proc/scsi/scsi").map_err(|e| e.to_string())?;
     let mut buff = String::new();
     f.read_to_string(&mut buff).map_err(|e| e.to_string())?;
