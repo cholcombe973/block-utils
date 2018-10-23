@@ -115,6 +115,7 @@ pub enum Vendor {
     Cisco,
     Hp,
     Lsi,
+    Vbox, // Virtual Box
 }
 
 impl FromStr for Vendor {
@@ -128,6 +129,7 @@ impl FromStr for Vendor {
             "hp" => Ok(Vendor::Hp),
             "HPE" => Ok(Vendor::Hp),
             "LSI" => Ok(Vendor::Lsi),
+            "VBOX" => Ok(Vendor::Vbox),
             _ => Err(BlockUtilsError::new(format!("Unknown Vendor: {}", s))),
         }
     }
@@ -799,7 +801,7 @@ pub fn async_format_block_device(
 
 #[test]
 fn test_get_device_info() {
-    print!("{:?}", get_device_info(&PathBuf::from("/dev/sda1")));
+    print!("{:?}", get_device_info(&PathBuf::from("/dev/sda5")));
     print!("{:?}", get_device_info(&PathBuf::from("/dev/loop0")));
 }
 
