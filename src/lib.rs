@@ -5,6 +5,7 @@ extern crate log;
 #[macro_use]
 extern crate nom;
 extern crate regex;
+extern crate serde_json;
 extern crate shellscript;
 extern crate uuid;
 
@@ -15,15 +16,84 @@ use nom::is_digit;
 use regex::Regex;
 use uuid::Uuid;
 
+use std::error::Error as err;
 use std::ffi::OsStr;
 use std::fmt;
-use std::fs;
-use std::io::{BufReader, BufRead, Read, Write};
-use std::io;
+use std::fs::{self, read_dir, File};
+use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
 use std::str::{from_utf8, FromStr};
+
+pub type BlockResult<T> = Result<T, BlockUtilsError>;
+
+#[derive(Debug)]
+pub enum BlockUtilsError {
+    Error(String),
+    IoError(::std::io::Error),
+    ParseIntError(::std::num::ParseIntError),
+    SerdeError(serde_json::Error),
+    UdevError(::libudev::Error),
+}
+
+impl fmt::Display for BlockUtilsError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_str(self.description())
+    }
+}
+
+impl err for BlockUtilsError {
+    fn description(&self) -> &str {
+        match *self {
+            BlockUtilsError::Error(ref e) => &e,
+            BlockUtilsError::IoError(ref e) => e.description(),
+            BlockUtilsError::ParseIntError(ref e) => e.description(),
+            BlockUtilsError::SerdeError(ref e) => e.description(),
+            BlockUtilsError::UdevError(ref e) => e.description(),
+        }
+    }
+    fn cause(&self) -> Option<&err> {
+        match *self {
+            BlockUtilsError::Error(_) => None,
+            BlockUtilsError::IoError(ref e) => e.cause(),
+            BlockUtilsError::ParseIntError(ref e) => e.cause(),
+            BlockUtilsError::SerdeError(ref e) => e.cause(),
+            BlockUtilsError::UdevError(ref e) => e.cause(),
+        }
+    }
+}
+
+impl BlockUtilsError {
+    /// Create a new GlusterError with a String message
+    fn new(err: String) -> BlockUtilsError {
+        BlockUtilsError::Error(err)
+    }
+}
+
+impl From<::std::io::Error> for BlockUtilsError {
+    fn from(err: ::std::io::Error) -> BlockUtilsError {
+        BlockUtilsError::IoError(err)
+    }
+}
+
+impl From<::std::num::ParseIntError> for BlockUtilsError {
+    fn from(err: ::std::num::ParseIntError) -> BlockUtilsError {
+        BlockUtilsError::ParseIntError(err)
+    }
+}
+
+impl From<::libudev::Error> for BlockUtilsError {
+    fn from(err: ::libudev::Error) -> BlockUtilsError {
+        BlockUtilsError::UdevError(err)
+    }
+}
+
+impl From<::serde_json::Error> for BlockUtilsError {
+    fn from(err: ::serde_json::Error) -> BlockUtilsError {
+        BlockUtilsError::SerdeError(err)
+    }
+}
 
 // Formats a block device at Path p with XFS
 /// This is used for formatting btrfs filesystems and setting the metadata profile
@@ -40,24 +110,25 @@ pub enum MetadataProfile {
 
 /// What raid card if any the system is using to serve disks
 #[derive(Clone, Debug)]
-pub enum RaidType {
+pub enum Vendor {
     None,
     Cisco,
     Hp,
     Lsi,
 }
-impl FromStr for RaidType {
-    type Err = String;
+
+impl FromStr for Vendor {
+    type Err = BlockUtilsError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
         match s {
-            "ATA" => Ok(RaidType::None),
-            "CISCO" => Ok(RaidType::Cisco),
-            "HP" => Ok(RaidType::Hp),
-            "hp" => Ok(RaidType::Hp),
-            "HPE" => Ok(RaidType::Hp),
-            "LSI" => Ok(RaidType::Lsi),
-            _ => Err(format!("Unknown Raid Vendor: {}", s)),
+            "ATA" => Ok(Vendor::None),
+            "CISCO" => Ok(Vendor::Cisco),
+            "HP" => Ok(Vendor::Hp),
+            "hp" => Ok(Vendor::Hp),
+            "HPE" => Ok(Vendor::Hp),
+            "LSI" => Ok(Vendor::Lsi),
+            _ => Err(BlockUtilsError::new(format!("Unknown Vendor: {}", s))),
         }
     }
 }
@@ -98,10 +169,10 @@ pub enum Scheduler {
 
 impl fmt::Display for Scheduler {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let s = match self {
-            &Scheduler::Cfq => "cfq",
-            &Scheduler::Deadline => "deadline",
-            &Scheduler::Noop => "noop",
+        let s = match *self {
+            Scheduler::Cfq => "cfq",
+            Scheduler::Deadline => "deadline",
+            Scheduler::Noop => "noop",
         };
         write!(f, "{}", s)
     }
@@ -152,44 +223,49 @@ pub enum FilesystemType {
     Unknown,
 }
 
-impl FilesystemType {
-    pub fn from_str(fs_type: &str) -> FilesystemType {
-        match fs_type {
-            "btrfs" => FilesystemType::Btrfs,
-            "ext2" => FilesystemType::Ext2,
-            "ext3" => FilesystemType::Ext3,
-            "ext4" => FilesystemType::Ext4,
-            "xfs" => FilesystemType::Xfs,
-            "zfs" => FilesystemType::Zfs,
-            _ => FilesystemType::Unknown,
+impl FromStr for FilesystemType {
+    type Err = BlockUtilsError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "btrfs" => Ok(FilesystemType::Btrfs),
+            "ext2" => Ok(FilesystemType::Ext2),
+            "ext3" => Ok(FilesystemType::Ext3),
+            "ext4" => Ok(FilesystemType::Ext4),
+            "xfs" => Ok(FilesystemType::Xfs),
+            "zfs" => Ok(FilesystemType::Zfs),
+            _ => Ok(FilesystemType::Unknown),
         }
     }
+}
+
+impl FilesystemType {
     pub fn to_str(&self) -> &str {
-        match self {
-            &FilesystemType::Btrfs => "btrfs",
-            &FilesystemType::Ext2 => "ext2",
-            &FilesystemType::Ext3 => "ext3",
-            &FilesystemType::Ext4 => "ext4",
-            &FilesystemType::Xfs => "xfs",
-            &FilesystemType::Zfs => "zfs",
-            &FilesystemType::Unknown => "unknown",
+        match *self {
+            FilesystemType::Btrfs => "btrfs",
+            FilesystemType::Ext2 => "ext2",
+            FilesystemType::Ext3 => "ext3",
+            FilesystemType::Ext4 => "ext4",
+            FilesystemType::Xfs => "xfs",
+            FilesystemType::Zfs => "zfs",
+            FilesystemType::Unknown => "unknown",
         }
     }
     pub fn to_string(&self) -> String {
-        match self {
-            &FilesystemType::Btrfs => "btrfs".to_string(),
-            &FilesystemType::Ext2 => "ext2".to_string(),
-            &FilesystemType::Ext3 => "ext3".to_string(),
-            &FilesystemType::Ext4 => "ext4".to_string(),
-            &FilesystemType::Xfs => "xfs".to_string(),
-            &FilesystemType::Zfs => "zfs".to_string(),
-            &FilesystemType::Unknown => "unknown".to_string(),
+        match *self {
+            FilesystemType::Btrfs => "btrfs".to_string(),
+            FilesystemType::Ext2 => "ext2".to_string(),
+            FilesystemType::Ext3 => "ext3".to_string(),
+            FilesystemType::Ext4 => "ext4".to_string(),
+            FilesystemType::Xfs => "xfs".to_string(),
+            FilesystemType::Zfs => "zfs".to_string(),
+            FilesystemType::Unknown => "unknown".to_string(),
         }
     }
 }
 
 impl MetadataProfile {
-    pub fn to_string(self) -> String {
+    pub fn to_string(&self) -> String {
         match self {
             MetadataProfile::Raid0 => "raid0".to_string(),
             MetadataProfile::Raid1 => "raid1".to_string(),
@@ -223,9 +299,9 @@ pub enum Filesystem {
         block_size: Option<u64>, // Note this MUST be a power of 2
         force: bool,
         inode_size: Option<u64>,
-        stripe_size: Option<u64>, // RAID controllers stripe
+        stripe_size: Option<u64>,  // RAID controllers stripe
         stripe_width: Option<u64>, // IE # of data disks
-        agcount: Option<u64>, // number of allocation  groups
+        agcount: Option<u64>,      // number of allocation  groups
     },
     Zfs {
         /// The default blocksize for volumes is 8 Kbytes. An
@@ -236,69 +312,53 @@ pub enum Filesystem {
     },
 }
 
-
 impl Filesystem {
     pub fn new(name: &str) -> Filesystem {
         match name.trim() {
             // Defaults.  Can be changed as needed by the caller
-            "zfs" => {
-                Filesystem::Zfs {
-                    block_size: None,
-                    compression: None,
-                }
-            }
-            "xfs" => {
-                Filesystem::Xfs {
-                    stripe_size: None,
-                    stripe_width: None,
-                    block_size: None,
-                    inode_size: Some(512),
-                    force: false,
-                    agcount: Some(32),
-                }
-            }
-            "btrfs" => {
-                Filesystem::Btrfs {
-                    metadata_profile: MetadataProfile::Single,
-                    leaf_size: 32768,
-                    node_size: 32768,
-                }
-            }
-            "ext4" => {
-                Filesystem::Ext4 {
-                    inode_size: 512,
-                    reserved_blocks_percentage: 0,
-                    stride: None,
-                    stripe_width: None,
-                }
-            }
-            _ => {
-                Filesystem::Xfs {
-                    stripe_size: None,
-                    stripe_width: None,
-                    block_size: None,
-                    inode_size: None,
-                    force: false,
-                    agcount: None,
-                }
-            }
+            "zfs" => Filesystem::Zfs {
+                block_size: None,
+                compression: None,
+            },
+            "xfs" => Filesystem::Xfs {
+                stripe_size: None,
+                stripe_width: None,
+                block_size: None,
+                inode_size: Some(512),
+                force: false,
+                agcount: Some(32),
+            },
+            "btrfs" => Filesystem::Btrfs {
+                metadata_profile: MetadataProfile::Single,
+                leaf_size: 32768,
+                node_size: 32768,
+            },
+            "ext4" => Filesystem::Ext4 {
+                inode_size: 512,
+                reserved_blocks_percentage: 0,
+                stride: None,
+                stripe_width: None,
+            },
+            _ => Filesystem::Xfs {
+                stripe_size: None,
+                stripe_width: None,
+                block_size: None,
+                inode_size: None,
+                force: false,
+                agcount: None,
+            },
         }
     }
 }
 
-fn run_command<S: AsRef<OsStr>>(command: &str, arg_list: &[S]) -> Output {
-    let mut cmd = Command::new(command);
-    cmd.args(arg_list);
-    let output = cmd.output().unwrap_or_else(
-        |e| panic!("failed to execute process: {} ", e),
-    );
-    return output;
+fn run_command<S: AsRef<OsStr>>(command: &str, arg_list: &[S]) -> BlockResult<Output> {
+    Ok(Command::new(command).args(arg_list).output()?)
 }
 
 /// Utility function to mount a device at a mount point
 /// NOTE: This assumes the device is formatted at this point.  The mount
 /// will fail if the device isn't formatted.
-pub fn mount_device(device: &Device, mount_point: &str) -> Result<i32, String> {
+pub fn mount_device(device: &Device, mount_point: &str) -> BlockResult<i32> {
     let mut arg_list: Vec<String> = Vec::new();
     match device.id {
         Some(id) => {
@@ -312,28 +372,28 @@ pub fn mount_device(device: &Device, mount_point: &str) -> Result<i32, String> {
     arg_list.push(mount_point.to_string());
     debug!("mount: {:?}", arg_list);
 
-    return process_output(run_command("mount", &arg_list));
+    process_output(&run_command("mount", &arg_list)?)
 }
 
 //Utility function to unmount a device at a mount point
-pub fn unmount_device(mount_point: &str) -> Result<i32, String> {
+pub fn unmount_device(mount_point: &str) -> BlockResult<i32> {
     let mut arg_list: Vec<String> = Vec::new();
     arg_list.push(mount_point.to_string());
 
-    return process_output(run_command("umount", &arg_list));
+    process_output(&run_command("umount", &arg_list)?)
 }
 
 /// Parse mtab and return the device which is mounted at a given directory
-pub fn get_mount_device(mount_dir: &Path) -> io::Result<Option<PathBuf>> {
+pub fn get_mount_device(mount_dir: &Path) -> BlockResult<Option<PathBuf>> {
     let dir = mount_dir.to_string_lossy().into_owned();
-    let f = fs::File::open("/etc/mtab")?;
+    let f = File::open("/etc/mtab")?;
     let reader = BufReader::new(f);
 
     for line in reader.lines() {
         let l = line?;
         if l.contains(&dir) {
             let parts: Vec<&str> = l.split_whitespace().collect();
-            if parts.len() > 0 {
+            if !parts.is_empty() {
                 return Ok(Some(PathBuf::from(parts[0])));
             }
         }
@@ -342,12 +402,11 @@ pub fn get_mount_device(mount_dir: &Path) -> io::Result<Option<PathBuf>> {
 }
 
 /// Parse mtab and return all mounted block devices not including LVM
-pub fn get_mounted_devices() -> io::Result<Vec<Device>> {
+pub fn get_mounted_devices() -> BlockResult<Vec<Device>> {
     let mut results: Vec<Device> = Vec::new();
 
     let mtab_devices: Vec<FsEntry> = FsTab::new(Path::new("/etc/mtab"))
-        .get_entries()
-        .map_err(|e| io::Error::new(io::ErrorKind::Other, e))?
+        .get_entries()?
         .into_iter()
         .filter(|d| d.fs_spec.contains("/dev/"))
         .filter(|d| !d.fs_spec.contains("mapper"))
@@ -357,12 +416,12 @@ pub fn get_mounted_devices() -> io::Result<Vec<Device>> {
             id: None,
             name: Path::new(&d.fs_spec)
                 .file_name()
-                .unwrap_or(OsStr::new(""))
+                .unwrap_or_else(|| OsStr::new(""))
                 .to_string_lossy()
                 .into_owned(),
             media_type: MediaType::Unknown,
             capacity: 0,
-            fs_type: FilesystemType::from_str(&d.vfs_type),
+            fs_type: FilesystemType::from_str(&d.vfs_type)?,
             serial_number: None,
         });
     }
@@ -372,16 +431,16 @@ pub fn get_mounted_devices() -> io::Result<Vec<Device>> {
 
 /// Parse mtab and return the mountpoint the device is mounted at.
 /// This is the opposite of get_mount_device
-pub fn get_mountpoint(device: &Path) -> io::Result<Option<PathBuf>> {
+pub fn get_mountpoint(device: &Path) -> BlockResult<Option<PathBuf>> {
     let s = device.to_string_lossy().into_owned();
-    let f = fs::File::open("/etc/mtab")?;
+    let f = File::open("/etc/mtab")?;
     let reader = BufReader::new(f);
 
     for line in reader.lines() {
         let l = line?;
         if l.contains(&s) {
             let parts: Vec<&str> = l.split_whitespace().collect();
-            if parts.len() > 0 {
+            if !parts.is_empty() {
                 return Ok(Some(PathBuf::from(parts[1])));
             }
         }
@@ -389,37 +448,36 @@ pub fn get_mountpoint(device: &Path) -> io::Result<Option<PathBuf>> {
     Ok(None)
 }
 
-fn process_output(output: Output) -> Result<i32, String> {
+fn process_output(output: &Output) -> BlockResult<i32> {
     if output.status.success() {
         Ok(0)
     } else {
         let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
-        Err(stderr)
+        Err(BlockUtilsError::new(stderr))
     }
 }
 
-pub fn erase_block_device(device: &Path) -> Result<(), String> {
+pub fn erase_block_device(device: &Path) -> BlockResult<()> {
     let output = Command::new("sgdisk")
         .args(&["--zap", &device.to_string_lossy()])
-        .output()
-        .map_err(|e| e.to_string())?;
+        .output()?;
     if output.status.success() {
         Ok(())
     } else {
-        Err(format!(
+        Err(BlockUtilsError::new(format!(
             "Disk {:?} failed to erase: {}",
             device,
             String::from_utf8_lossy(&output.stderr)
-        ))
+        )))
     }
 }
 
 /// Synchronous utility to format a block device with a given filesystem.
 /// Note: ZFS creation can be slow because there's potentially several commands that need to
 /// be run.  async_format_block_device will be faster if you have many block devices to format
-pub fn format_block_device(device: &Path, filesystem: &Filesystem) -> Result<i32, String> {
-    match filesystem {
-        &Filesystem::Btrfs {
+pub fn format_block_device(device: &Path, filesystem: &Filesystem) -> BlockResult<i32> {
+    match *filesystem {
+        Filesystem::Btrfs {
             ref metadata_profile,
             ref leaf_size,
             ref node_size,
@@ -438,11 +496,13 @@ pub fn format_block_device(device: &Path, filesystem: &Filesystem) -> Result<i32
             arg_list.push(device.to_string_lossy().to_string());
             // Check if mkfs.btrfs is installed
             if !Path::new("/sbin/mkfs.btrfs").exists() {
-                return Err("Please install btrfs-tools".into());
+                return Err(BlockUtilsError::new(
+                    "Please install btrfs-tools".to_string(),
+                ));
             }
-            return process_output(run_command("mkfs.btrfs", &arg_list));
+            process_output(&run_command("mkfs.btrfs", &arg_list)?)
         }
-        &Filesystem::Xfs {
+        Filesystem::Xfs {
             ref inode_size,
             ref force,
             ref block_size,
@@ -472,11 +532,11 @@ pub fn format_block_device(device: &Path, filesystem: &Filesystem) -> Result<i32
 
             // Check if mkfs.xfs is installed
             if !Path::new("/sbin/mkfs.xfs").exists() {
-                return Err("Please install xfsprogs".into());
+                return Err(BlockUtilsError::new("Please install xfsprogs".into()));
             }
-            return process_output(run_command("/sbin/mkfs.xfs", &arg_list));
+            process_output(&run_command("/sbin/mkfs.xfs", &arg_list)?)
         }
-        &Filesystem::Ext4 {
+        Filesystem::Ext4 {
             ref inode_size,
             ref reserved_blocks_percentage,
             ref stride,
@@ -492,86 +552,84 @@ pub fn format_block_device(device: &Path, filesystem: &Filesystem) -> Result<i32
 
             arg_list.push(device.to_string_lossy().to_string());
 
-            return process_output(run_command("mkfs.ext4", &arg_list));
+            process_output(&run_command("mkfs.ext4", &arg_list)?)
         }
-        &Filesystem::Zfs {
+        Filesystem::Zfs {
             ref block_size,
             ref compression,
         } => {
             // Check if zfs is installed
             if !Path::new("/sbin/zfs").exists() {
-                return Err("Please install zfsutils-linux".into());
+                return Err(BlockUtilsError::new("Please install zfsutils-linux".into()));
             }
             let base_name = device.file_name();
             match base_name {
                 Some(name) => {
                     //Mount at /mnt/{dev_name}
-                    let arg_list: Vec<String> =
-                        vec![
-                            "create".to_string(),
-                            "-f".to_string(),
-                            "-m".to_string(),
-                            format!("/mnt/{}", name.to_string_lossy().into_owned()),
-                            name.to_string_lossy().into_owned(),
-                            device.to_string_lossy().into_owned(),
-                        ];
+                    let arg_list: Vec<String> = vec![
+                        "create".to_string(),
+                        "-f".to_string(),
+                        "-m".to_string(),
+                        format!("/mnt/{}", name.to_string_lossy().into_owned()),
+                        name.to_string_lossy().into_owned(),
+                        device.to_string_lossy().into_owned(),
+                    ];
                     // Create the zpool
-                    let _ = process_output(run_command("/sbin/zpool", &arg_list))?;
+                    let _ = process_output(&run_command("/sbin/zpool", &arg_list)?)?;
                     if block_size.is_some() {
                         // If zpool creation is successful then we set these
-                        let _ = process_output(run_command(
+                        let _ = process_output(&run_command(
                             "/sbin/zfs",
-                            &vec![
+                            &[
                                 "set".to_string(),
                                 format!("recordsize={}", block_size.unwrap()),
                                 name.to_string_lossy().into_owned(),
                             ],
-                        ))?;
+                        )?)?;
                     }
                     if compression.is_some() {
-                        let _ = process_output(run_command(
+                        let _ = process_output(&run_command(
                             "/sbin/zfs",
-                            &vec![
+                            &[
                                 "set".to_string(),
                                 "compression=on".to_string(),
                                 name.to_string_lossy().into_owned(),
                             ],
-                        ))?;
+                        )?)?;
                     }
-                    let _ = process_output(run_command(
+                    let _ = process_output(&run_command(
                         "/sbin/zfs",
-                        &vec![
+                        &[
                             "set".to_string(),
                             "acltype=posixacl".to_string(),
                             name.to_string_lossy().into_owned(),
                         ],
-                    ))?;
-                    let _ = process_output(run_command(
+                    )?)?;
+                    let _ = process_output(&run_command(
                         "/sbin/zfs",
-                        &vec![
+                        &[
                             "set".to_string(),
                             "atime=off".to_string(),
                             name.to_string_lossy().into_owned(),
                         ],
-                    ))?;
-                    return Ok(0);
+                    )?)?;
+                    Ok(0)
                 }
-                None => Err(format!(
+                None => Err(BlockUtilsError::new(format!(
                     "Unable to determine filename for device: {:?}",
                     device
-                )),
+                ))),
             }
         }
-
     }
 }
 
 pub fn async_format_block_device(
     device: &PathBuf,
     filesystem: &Filesystem,
-) -> Result<AsyncInit, String> {
-    match filesystem {
-        &Filesystem::Btrfs {
+) -> BlockResult<AsyncInit> {
+    match *filesystem {
+        Filesystem::Btrfs {
             ref metadata_profile,
             ref leaf_size,
             ref node_size,
@@ -587,19 +645,15 @@ pub fn async_format_block_device(
             ];
             // Check if mkfs.btrfs is installed
             if !Path::new("/sbin/mkfs.btrfs").exists() {
-                return Err("Please install btrfs-tools".into());
+                return Err(BlockUtilsError::new("Please install btrfs-tools".into()));
             }
-            return Ok(AsyncInit {
-                format_child: Command::new("mkfs.btrfs").args(&arg_list).spawn().map_err(
-                    |e| {
-                        e.to_string()
-                    },
-                )?,
+            Ok(AsyncInit {
+                format_child: Command::new("mkfs.btrfs").args(&arg_list).spawn()?,
                 post_setup_commands: vec![],
                 device: device.clone(),
-            });
+            })
         }
-        &Filesystem::Xfs {
+        Filesystem::Xfs {
             ref block_size,
             ref inode_size,
             ref stripe_size,
@@ -631,44 +685,37 @@ pub fn async_format_block_device(
 
             // Check if mkfs.xfs is installed
             if !Path::new("/sbin/mkfs.xfs").exists() {
-                return Err("Please install xfsprogs".into());
+                return Err(BlockUtilsError::new("Please install xfsprogs".into()));
             }
-            let format_handle = Command::new("/sbin/mkfs.xfs")
-                .args(&arg_list)
-                .spawn()
-                .map_err(|e| e.to_string())?;
-            return Ok(AsyncInit {
+            let format_handle = Command::new("/sbin/mkfs.xfs").args(&arg_list).spawn()?;
+            Ok(AsyncInit {
                 format_child: format_handle,
                 post_setup_commands: vec![],
                 device: device.clone(),
-            });
+            })
         }
-        &Filesystem::Zfs {
+        Filesystem::Zfs {
             ref block_size,
             ref compression,
         } => {
             // Check if zfs is installed
             if !Path::new("/sbin/zfs").exists() {
-                return Err("Please install zfsutils-linux".into());
+                return Err(BlockUtilsError::new("Please install zfsutils-linux".into()));
             }
             let base_name = device.file_name();
             match base_name {
                 Some(name) => {
                     //Mount at /mnt/{dev_name}
                     let mut post_setup_commands: Vec<(String, Vec<String>)> = Vec::new();
-                    let arg_list: Vec<String> =
-                        vec![
-                            "create".to_string(),
-                            "-f".to_string(),
-                            "-m".to_string(),
-                            format!("/mnt/{}", name.to_string_lossy().into_owned()),
-                            name.to_string_lossy().into_owned(),
-                            device.to_string_lossy().into_owned(),
-                        ];
-                    let zpool_create = Command::new("/sbin/zpool")
-                        .args(&arg_list)
-                        .spawn()
-                        .map_err(|e| e.to_string())?;
+                    let arg_list: Vec<String> = vec![
+                        "create".to_string(),
+                        "-f".to_string(),
+                        "-m".to_string(),
+                        format!("/mnt/{}", name.to_string_lossy().into_owned()),
+                        name.to_string_lossy().into_owned(),
+                        device.to_string_lossy().into_owned(),
+                    ];
+                    let zpool_create = Command::new("/sbin/zpool").args(&arg_list).spawn()?;
 
                     if block_size.is_some() {
                         // If zpool creation is successful then we set these
@@ -707,19 +754,19 @@ pub fn async_format_block_device(
                             name.to_string_lossy().into_owned(),
                         ],
                     ));
-                    return Ok(AsyncInit {
+                    Ok(AsyncInit {
                         format_child: zpool_create,
-                        post_setup_commands: post_setup_commands,
+                        post_setup_commands,
                         device: device.clone(),
-                    });
+                    })
                 }
-                None => Err(format!(
+                None => Err(BlockUtilsError::new(format!(
                     "Unable to determine filename for device: {:?}",
                     device
-                )),
+                ))),
             }
         }
-        &Filesystem::Ext4 {
+        Filesystem::Ext4 {
             ref inode_size,
             ref reserved_blocks_percentage,
             ref stride,
@@ -741,15 +788,11 @@ pub fn async_format_block_device(
             }
             arg_list.push(device.to_string_lossy().into_owned());
 
-            return Ok(AsyncInit {
-                format_child: Command::new("mkfs.ext4").args(&arg_list).spawn().map_err(
-                    |e| {
-                        e.to_string()
-                    },
-                )?,
+            Ok(AsyncInit {
+                format_child: Command::new("mkfs.ext4").args(&arg_list).spawn()?,
                 post_setup_commands: vec![],
                 device: device.clone(),
-            });
+            })
         }
     }
 }
@@ -765,21 +808,16 @@ fn get_size(device: &libudev::Device) -> Option<u64> {
         // 512 is the block size
         Some(size_str) => {
             let size = size_str.to_str().unwrap_or("0").parse::<u64>().unwrap_or(0);
-            return Some(size * 512);
+            Some(size * 512)
         }
-        None => return None,
+        None => None,
     }
 }
 
 fn get_uuid(device: &libudev::Device) -> Option<Uuid> {
     match device.property_value("ID_FS_UUID") {
-        Some(value) => {
-            match Uuid::parse_str(value.to_str().unwrap()) {
-                Ok(result) => return Some(result),
-                Err(_) => return None,
-            }
-        }
-        None => return None,
+        Some(value) => Uuid::parse_str(&value.to_string_lossy()).ok(),
+        None => None,
     }
 }
 
@@ -795,13 +833,13 @@ fn get_fs_type(device: &libudev::Device) -> FilesystemType {
         Some(s) => {
             let value = s.to_string_lossy();
             match value.as_ref() {
-                "btrfs" => return FilesystemType::Btrfs,
-                "xfs" => return FilesystemType::Xfs,
-                "ext4" => return FilesystemType::Ext4,
-                _ => return FilesystemType::Unknown,
+                "btrfs" => FilesystemType::Btrfs,
+                "xfs" => FilesystemType::Xfs,
+                "ext4" => FilesystemType::Ext4,
+                _ => FilesystemType::Unknown,
             }
         }
-        None => return FilesystemType::Unknown,
+        None => FilesystemType::Unknown,
     }
 }
 
@@ -835,7 +873,7 @@ fn get_media_type(device: &libudev::Device) -> MediaType {
     }
 
     // Test for LVM
-    if let Some(_) = device.property_value("DM_NAME") {
+    if device.property_value("DM_NAME").is_some() {
         return MediaType::LVM;
     }
 
@@ -859,14 +897,14 @@ fn get_media_type(device: &libudev::Device) -> MediaType {
     }
 
     // I give up
-    return MediaType::Unknown;
+    MediaType::Unknown
 }
 
 /// Checks and returns if a particular directory is a mountpoint
-pub fn is_mounted(directory: &Path) -> Result<bool, String> {
+pub fn is_mounted(directory: &Path) -> BlockResult<bool> {
     let parent = directory.parent();
 
-    let dir_metadata = try!(fs::metadata(directory).map_err(|e| e.to_string()));
+    let dir_metadata = fs::metadata(directory)?;
     let file_type = dir_metadata.file_type();
 
     if file_type.is_symlink() {
@@ -875,7 +913,7 @@ pub fn is_mounted(directory: &Path) -> Result<bool, String> {
     }
 
     if parent.is_some() {
-        let parent_metadata = try!(fs::metadata(parent.unwrap()).map_err(|e| e.to_string()));
+        let parent_metadata = fs::metadata(parent.unwrap())?;
         if parent_metadata.dev() != dir_metadata.dev() {
             // path/.. on a different device as path
             return Ok(true);
@@ -884,25 +922,23 @@ pub fn is_mounted(directory: &Path) -> Result<bool, String> {
         // If the directory doesn't have a parent it's the root filesystem
         return Ok(false);
     }
-    return Ok(false);
+    Ok(false)
 }
 
 /// Scan a system and return all block devices that udev knows about
 /// This function will skip udev devices identified as partition.  If
 /// it can't discover this it will error on the side of caution and
 /// return the device
-pub fn get_block_devices() -> Result<Vec<PathBuf>, String> {
+pub fn get_block_devices() -> BlockResult<Vec<PathBuf>> {
     let mut block_devices: Vec<PathBuf> = Vec::new();
-    let context = try!(libudev::Context::new().map_err(|e| e.to_string()));
-    let mut enumerator = try!(libudev::Enumerator::new(&context).map_err(
-        |e| e.to_string(),
-    ));
-    let devices = try!(enumerator.scan_devices().map_err(|e| e.to_string()));
+    let context = libudev::Context::new()?;
+    let mut enumerator = libudev::Enumerator::new(&context)?;
+    let devices = enumerator.scan_devices()?;
 
     for device in devices {
         if device.subsystem() == "block" {
             let partition = match device.devtype() {
-                Some(devtype) => if devtype == "partition" { true } else { false },
+                Some(devtype) => devtype == "partition",
                 None => false,
             };
             if !partition {
@@ -917,104 +953,198 @@ pub fn get_block_devices() -> Result<Vec<PathBuf>, String> {
 }
 
 /// Checks to see if the subsystem this device is using is block
-pub fn is_block_device(device_path: &PathBuf) -> Result<bool, String> {
-    let context = try!(libudev::Context::new().map_err(|e| e.to_string()));
-    let mut enumerator = try!(libudev::Enumerator::new(&context).map_err(
-        |e| e.to_string(),
-    ));
-    let devices = try!(enumerator.scan_devices().map_err(|e| e.to_string()));
+pub fn is_block_device(device_path: &PathBuf) -> BlockResult<bool> {
+    let context = libudev::Context::new()?;
+    let mut enumerator = libudev::Enumerator::new(&context)?;
+    let devices = enumerator.scan_devices()?;
 
-    let sysname = try!(device_path.file_name().ok_or(format!(
-        "Unable to get file_name on device {:?}",
-        device_path
-    )));
+    let sysname = device_path.file_name().ok_or_else(|| {
+        BlockUtilsError::new(format!(
+            "Unable to get file_name on device {:?}",
+            device_path
+        ))
+    })?;
 
     for device in devices {
-        if sysname == device.sysname() {
-            if device.subsystem() == "block" {
-                return Ok(true);
-            }
+        if sysname == device.sysname() && device.subsystem() == "block" {
+            return Ok(true);
         }
     }
 
-    return Err(format!("Unable to find device with name {:?}", device_path));
+    Err(BlockUtilsError::new(format!(
+        "Unable to find device with name {:?}",
+        device_path
+    )))
 }
 
 #[derive(Clone, Debug)]
 pub struct ScsiInfo {
-    host: String,
-    channel: u32,
-    id: u32,
-    lun: u32,
-    vendor: RaidType,
-    model: String,
-    rev: String,
-    scsi_type: String,
+    host: u8,
+    channel: u8,
+    id: u8,
+    lun: u8,
+    vendor: Vendor,
+    model: Option<String>,
+    rev: Option<String>,
+    scsi_type: ScsiDeviceType,
     scsi_revision: u32,
+}
+
+// Taken from https://github.com/hreinecke/lsscsi/blob/master/src/lsscsi.c
+#[derive(Clone, Debug)]
+pub enum ScsiDeviceType {
+    DirectAccess,
+    SequentialAccess,
+    Printer,
+    Processor,
+    WriteOnce,
+    CdRom,
+    Scanner,
+    Opticalmemory,
+    MediumChanger,
+    Communications,
+    Unknowna,
+    Unknownb,
+    StorageArray,
+    Enclosure,
+    SimplifiedDirectAccess,
+    OpticalCardReadWriter,
+    BridgeController,
+    ObjectBasedStorage,
+    AutomationDriveInterface,
+    SecurityManager,
+    ZonedBlock,
+    Reserved15,
+    Reserved16,
+    Reserved17,
+    Reserved18,
+    Reserved19,
+    Reserved1a,
+    Reserved1b,
+    Reserved1c,
+    Reserved1e,
+    WellKnownLu,
+    NoDevice,
+}
+
+impl FromStr for ScsiDeviceType {
+    type Err = BlockUtilsError;
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "0" => Ok(ScsiDeviceType::DirectAccess),
+            "1" => Ok(ScsiDeviceType::SequentialAccess),
+            "2" => Ok(ScsiDeviceType::Printer),
+            "3" => Ok(ScsiDeviceType::Processor),
+            "4" => Ok(ScsiDeviceType::WriteOnce),
+            "5" => Ok(ScsiDeviceType::CdRom),
+            "6" => Ok(ScsiDeviceType::Scanner),
+            "7" => Ok(ScsiDeviceType::Opticalmemory),
+            "8" => Ok(ScsiDeviceType::MediumChanger),
+            "9" => Ok(ScsiDeviceType::Communications),
+            "10" => Ok(ScsiDeviceType::Unknowna),
+            "11" => Ok(ScsiDeviceType::Unknownb),
+            "12" => Ok(ScsiDeviceType::StorageArray),
+            "13" => Ok(ScsiDeviceType::Enclosure),
+            "14" => Ok(ScsiDeviceType::SimplifiedDirectAccess),
+            "15" => Ok(ScsiDeviceType::OpticalCardReadWriter),
+            "16" => Ok(ScsiDeviceType::BridgeController),
+            "17" => Ok(ScsiDeviceType::ObjectBasedStorage),
+            "18" => Ok(ScsiDeviceType::AutomationDriveInterface),
+            "19" => Ok(ScsiDeviceType::SecurityManager),
+            "20" => Ok(ScsiDeviceType::ZonedBlock),
+            "21" => Ok(ScsiDeviceType::Reserved15),
+            "22" => Ok(ScsiDeviceType::Reserved16),
+            "23" => Ok(ScsiDeviceType::Reserved17),
+            "24" => Ok(ScsiDeviceType::Reserved18),
+            "25" => Ok(ScsiDeviceType::Reserved19),
+            "26" => Ok(ScsiDeviceType::Reserved1a),
+            "27" => Ok(ScsiDeviceType::Reserved1b),
+            "28" => Ok(ScsiDeviceType::Reserved1c),
+            "29" => Ok(ScsiDeviceType::Reserved1e),
+            "30" => Ok(ScsiDeviceType::WellKnownLu),
+            "31" => Ok(ScsiDeviceType::NoDevice),
+            "Direct-Access" => Ok(ScsiDeviceType::DirectAccess),
+            "Enclosure" => Ok(ScsiDeviceType::Enclosure),
+            "RAID" => Ok(ScsiDeviceType::StorageArray),
+            _ => Err(BlockUtilsError::new(format!("Unknown scheduler {}", s))),
+        }
+    }
+}
+
+impl Default for ScsiInfo {
+    fn default() -> ScsiInfo {
+        ScsiInfo {
+            host: 0,
+            channel: 0,
+            id: 0,
+            lun: 0,
+            vendor: Vendor::None,
+            model: None,
+            rev: None,
+            scsi_type: ScsiDeviceType::NoDevice,
+            scsi_revision: 0,
+        }
+    }
 }
 
 #[test]
 fn test_scsi_parser() {
-    let mut f = fs::File::open("tests/proc_scsi").unwrap();
-    let mut s = String::new();
-    f.read_to_string(&mut s).unwrap();
-    println!("scsi_host_info {:?}", scsi_host_info(s.as_bytes()));
+    let s = fs::read_to_string("tests/proc_scsi").unwrap();
+    println!("scsi_host_info {:#?}", scsi_host_info(s.as_bytes()));
 }
 
-named!(host<&str>,
-    map_res!(
-        preceded!(ws!(tag!("Host:")), take_until_and_consume!(" ")),
-        from_utf8)
-);
+named!(host<u8>, ws!(preceded!(ws!(tag!("Host: scsi")), take_u8)));
 
-named!(vendor<RaidType>,
-    ws!(map_res!(map_res!(
-        preceded!(ws!(tag!("Vendor:")), take_until_and_consume!(" ")),
-        from_utf8), RaidType::from_str)
-    )
-);
-
-named!(model<&str>,
+named!(
+    model<&str>,
     ws!(map_res!(
         preceded!(ws!(tag!("Model:")), take_until_and_consume!("  ")),
-        from_utf8)
-    )
+        from_utf8
+    ))
 );
 
-named!(rev<&str>,
+named!(
+    rev<&str>,
     ws!(map_res!(
         preceded!(ws!(tag!("Rev:")), take_until_and_consume!(" ")),
-        from_utf8)
-    )
+        from_utf8
+    ))
 );
 
-named!(scsi_type<&str>,
+named!(
+    vendor<&str>,
+    ws!(map_res!(
+        preceded!(ws!(tag!("Vendor:")), take_until_and_consume!(" ")),
+        from_utf8
+    ))
+);
+
+named!(
+    scsi_type<&str>,
     ws!(map_res!(
         preceded!(ws!(tag!("Type:")), take_until_and_consume!(" ")),
-        from_utf8)
-    )
+        from_utf8
+    ))
 );
 
-named!(take_u32 <u32>,
-    map_res!(
-        map_res!(
-            take_while!(is_digit), from_utf8),
-    u32::from_str)
+named!(
+    take_u8<u8>,
+    map_res!(map_res!(take_while!(is_digit), from_utf8), u8::from_str)
 );
 
-named!(channel<u32>,
-    ws!(preceded!(ws!(tag!("Channel:")), take_u32))
+named!(
+    take_u32<u32>,
+    map_res!(map_res!(take_while!(is_digit), from_utf8), u32::from_str)
 );
 
-named!(scsi_id<u32>,
-    ws!(preceded!(ws!(tag!("Id:")), take_u32))
-);
+named!(channel<u8>, ws!(preceded!(ws!(tag!("Channel:")), take_u8)));
 
-named!(scsi_lun<u32>,
-    ws!(preceded!(ws!(tag!("Lun:")), take_u32))
-);
+named!(scsi_id<u8>, ws!(preceded!(ws!(tag!("Id:")), take_u8)));
 
-named!(revision<u32>,
+named!(scsi_lun<u8>, ws!(preceded!(ws!(tag!("Lun:")), take_u8)));
+
+named!(
+    revision<u32>,
     ws!(preceded!(ws!(tag!("ANSI  SCSI revision:")), take_u32))
 );
 
@@ -1025,7 +1155,7 @@ named!(scsi_host_info<&[u8],Vec<ScsiInfo>>,
     channel: channel >>
     id: scsi_id >>
     lun: scsi_lun >>
-    scsi_vendor: vendor >>
+    vendor: vendor >>
     scsi_model: model >>
     scsi_rev: rev >>
     scsi_type: scsi_type >>
@@ -1033,49 +1163,94 @@ named!(scsi_host_info<&[u8],Vec<ScsiInfo>>,
 
     // the final tuple will be able to use the variables defined previously
     (ScsiInfo{
-        host: host.to_string(),
+        host,
         channel,
         id,
         lun,
-        vendor: scsi_vendor,
-        model: scsi_model.to_string(),
-        rev: scsi_rev.trim().to_string(),
-        scsi_type: scsi_type.to_string(),
+        vendor: Vendor::from_str(vendor).unwrap(),
+        model: Some(scsi_model.to_string()),
+        rev: Some(scsi_rev.trim().to_string()),
+        scsi_type: ScsiDeviceType::from_str(&scsi_type.to_string()).unwrap(),
         scsi_revision: revision,
     })
  ))
 );
 
 /// Detects the RAID card in use
-pub fn get_raid_info() -> Result<Vec<ScsiInfo>, String> {
-
-    let mut f = fs::File::open("/proc/scsi/scsi").map_err(|e| e.to_string())?;
-    let mut buff = String::new();
-    f.read_to_string(&mut buff).map_err(|e| e.to_string())?;
-
-    let parsed_data = match scsi_host_info(buff.as_bytes()) {
-        nom::IResult::Done(_, o) => {
-            return Ok(o);
+pub fn get_raid_info() -> BlockResult<Vec<ScsiInfo>> {
+    // Taken from the strace output of lsscsi
+    let scsi_path = Path::new("/sys/bus/scsi/devices");
+    if scsi_path.exists() {
+        let mut scsi_devices: Vec<ScsiInfo> = Vec::new();
+        for entry in read_dir(&scsi_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            let name = path.file_name();
+            if let Some(name) = name {
+                let n = name.to_string_lossy();
+                let f = match n.chars().next() {
+                    Some(c) => c,
+                    None => {
+                        warn!("{} doesn't have any characters.  Skipping", n);
+                        continue;
+                    }
+                };
+                // Only get the devices that start with a digit
+                if f.is_digit(10) {
+                    let mut s = ScsiInfo::default();
+                    let parts: Vec<&str> = n.split(':').collect();
+                    if parts.len() != 4 {
+                        warn!("Invalid device name: {}. Should be 0:0:0:0 format", n);
+                        continue;
+                    }
+                    s.host = u8::from_str(parts[0])?;
+                    s.channel = u8::from_str(parts[1])?;
+                    s.id = u8::from_str(parts[2])?;
+                    s.lun = u8::from_str(parts[3])?;
+                    for scsi_entries in read_dir(&path)? {
+                        let scsi_entry = scsi_entries?;
+                        if scsi_entry.file_name() == OsStr::new("model") {
+                            s.model =
+                                Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
+                        } else if scsi_entry.file_name() == OsStr::new("vendor") {
+                            s.vendor =
+                                Vendor::from_str(fs::read_to_string(&scsi_entry.path())?.trim())?;
+                        } else if scsi_entry.file_name() == OsStr::new("rev") {
+                            s.rev =
+                                Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
+                        } else if scsi_entry.file_name() == OsStr::new("type") {
+                            s.scsi_type = ScsiDeviceType::from_str(
+                                fs::read_to_string(&scsi_entry.path())?.trim(),
+                            )?;
+                        }
+                    }
+                    scsi_devices.push(s);
+                }
+            }
         }
-        nom::IResult::Incomplete(needed) => {
-            return Err(format!(
+        Ok(scsi_devices)
+    } else {
+        // Fallback behavior
+        let buff = fs::read_to_string("/proc/scsi/scsi")?;
+
+        match scsi_host_info(buff.as_bytes()) {
+            nom::IResult::Done(_, o) => Ok(o),
+            nom::IResult::Incomplete(needed) => Err(BlockUtilsError::new(format!(
                 "Unable to parse /proc/scsi/scsi output: {}.  Needed {:?} more bytes",
-                buff,
-                needed));
-        }
-        nom::IResult::Error(e) => {
-            return Err(format!(
+                buff, needed
+            ))),
+            nom::IResult::Error(e) => Err(BlockUtilsError::new(format!(
                 "Unable to parse /proc/scsi/scsi output: {}.  Error {}",
-                buff,
-                e));
+                buff, e
+            ))),
         }
-    };
+    }
 }
 
 /// Returns device info on every device it can find in the devices slice
 /// The device info may not be in the same order as the slice so be aware.
 /// This function is more efficient because it only call udev list once
-pub fn get_all_device_info(devices: &[PathBuf]) -> Result<Vec<Device>, String> {
+pub fn get_all_device_info(devices: &[PathBuf]) -> BlockResult<Vec<Device>> {
     let device_names: Vec<&OsStr> = devices
         .into_iter()
         .map(|d| d.file_name())
@@ -1084,90 +1259,84 @@ pub fn get_all_device_info(devices: &[PathBuf]) -> Result<Vec<Device>, String> {
         .collect();
     let mut device_infos: Vec<Device> = Vec::new();
 
-    let context = try!(libudev::Context::new().map_err(|e| e.to_string()));
-    let mut enumerator = try!(libudev::Enumerator::new(&context).map_err(
-        |e| e.to_string(),
-    ));
-    let host_devices = try!(enumerator.scan_devices().map_err(|e| e.to_string()));
+    let context = libudev::Context::new()?;
+    let mut enumerator = libudev::Enumerator::new(&context)?;
+    let host_devices = enumerator.scan_devices()?;
 
     for device in host_devices {
         //let sysname = PathBuf::from(device.sysname());
         //println!("devices.contains({:?})", &sysname);
-        if device_names.contains(&device.sysname()) {
-            if device.subsystem() == "block" {
-                // Ok we're a block device
-                let id: Option<Uuid> = get_uuid(&device);
-                let serial = get_serial(&device);
-                let media_type = get_media_type(&device);
-                let capacity = match get_size(&device) {
-                    Some(size) => size,
-                    None => 0,
-                };
-                let fs_type = get_fs_type(&device);
+        if device_names.contains(&device.sysname()) && device.subsystem() == "block" {
+            // Ok we're a block device
+            let id: Option<Uuid> = get_uuid(&device);
+            let serial = get_serial(&device);
+            let media_type = get_media_type(&device);
+            let capacity = match get_size(&device) {
+                Some(size) => size,
+                None => 0,
+            };
+            let fs_type = get_fs_type(&device);
 
-                device_infos.push(Device {
-                    id: id,
-                    name: device.sysname().to_string_lossy().into_owned(),
-                    media_type: media_type,
-                    capacity: capacity,
-                    fs_type: fs_type,
-                    serial_number: serial,
-                });
-            }
+            device_infos.push(Device {
+                id,
+                name: device.sysname().to_string_lossy().into_owned(),
+                media_type,
+                capacity,
+                fs_type,
+                serial_number: serial,
+            });
         }
     }
-    return Ok(device_infos);
+    Ok(device_infos)
 }
 
 /// Returns device information that is gathered with udev.
-pub fn get_device_info(device_path: &Path) -> Result<Device, String> {
-    let context = try!(libudev::Context::new().map_err(|e| e.to_string()));
-    let mut enumerator = try!(libudev::Enumerator::new(&context).map_err(
-        |e| e.to_string(),
-    ));
-    let devices = try!(enumerator.scan_devices().map_err(|e| e.to_string()));
+pub fn get_device_info(device_path: &Path) -> BlockResult<Device> {
+    let context = libudev::Context::new()?;
+    let mut enumerator = libudev::Enumerator::new(&context)?;
+    let devices = enumerator.scan_devices()?;
 
-    let sysname = try!(device_path.file_name().ok_or(format!(
-        "Unable to get file_name on device {:?}",
-        device_path
-    )));
+    let sysname = device_path.file_name().ok_or_else(|| {
+        BlockUtilsError::new(format!(
+            "Unable to get file_name on device {:?}",
+            device_path
+        ))
+    })?;
 
     for device in devices {
-        if sysname == device.sysname() {
+        if sysname == device.sysname() && device.subsystem() == "block" {
             // This is going to get complicated
-            if device.subsystem() == "block" {
-                // Ok we're a block device
-                let id: Option<Uuid> = get_uuid(&device);
-                let serial = get_serial(&device);
-                let media_type = get_media_type(&device);
-                let capacity = match get_size(&device) {
-                    Some(size) => size,
-                    None => 0,
-                };
-                let fs_type = get_fs_type(&device);
+            // Ok we're a block device
+            let id: Option<Uuid> = get_uuid(&device);
+            let serial = get_serial(&device);
+            let media_type = get_media_type(&device);
+            let capacity = match get_size(&device) {
+                Some(size) => size,
+                None => 0,
+            };
+            let fs_type = get_fs_type(&device);
 
-                return Ok(Device {
-                    id: id,
-                    name: sysname.to_string_lossy().to_string(),
-                    media_type: media_type,
-                    capacity: capacity,
-                    fs_type: fs_type,
-                    serial_number: serial,
-                });
-            }
+            return Ok(Device {
+                id,
+                name: sysname.to_string_lossy().to_string(),
+                media_type,
+                capacity,
+                fs_type,
+                serial_number: serial,
+            });
         }
     }
-    return Err(format!("Unable to find device with name {:?}", device_path));
+    Err(BlockUtilsError::new(format!(
+        "Unable to find device with name {:?}",
+        device_path
+    )))
 }
-pub fn set_elevator(
-    device_path: &PathBuf,
-    elevator: &Scheduler,
-) -> Result<usize, ::std::io::Error> {
+pub fn set_elevator(device_path: &PathBuf, elevator: &Scheduler) -> BlockResult<usize> {
     let device_name = match device_path.file_name() {
         Some(name) => name.to_string_lossy().into_owned(),
         None => "".to_string(),
     };
-    let mut f = fs::File::open("/etc/rc.local")?;
+    let mut f = File::open("/etc/rc.local")?;
     let elevator_cmd = format!(
         "echo {scheduler} > /sys/block/{device}/queue/scheduler",
         scheduler = elevator,
@@ -1175,28 +1344,25 @@ pub fn set_elevator(
     );
 
     let mut script = shellscript::parse(&mut f)?;
-    let existing_cmd = script.commands.iter().position(
-        |cmd| cmd.contains(&device_name),
-    );
+    let existing_cmd = script
+        .commands
+        .iter()
+        .position(|cmd| cmd.contains(&device_name));
     if let Some(pos) = existing_cmd {
         script.commands.remove(pos);
     }
     script.commands.push(elevator_cmd);
-    let mut f = fs::File::create("/etc/rc.local")?;
+    let mut f = File::create("/etc/rc.local")?;
     let bytes_written = script.write(&mut f)?;
     Ok(bytes_written)
 }
 
-pub fn weekly_defrag(
-    mount: &str,
-    fs_type: &FilesystemType,
-    interval: &str,
-) -> Result<usize, ::std::io::Error> {
+pub fn weekly_defrag(mount: &str, fs_type: &FilesystemType, interval: &str) -> BlockResult<usize> {
     let crontab = Path::new("/var/spool/cron/crontabs/root");
-    let defrag_command = match fs_type {
-        &FilesystemType::Ext4 => "e4defrag",
-        &FilesystemType::Btrfs => "btrfs filesystem defragment -r",
-        &FilesystemType::Xfs => "xfs_fsr",
+    let defrag_command = match *fs_type {
+        FilesystemType::Ext4 => "e4defrag",
+        FilesystemType::Btrfs => "btrfs filesystem defragment -r",
+        FilesystemType::Xfs => "xfs_fsr",
         _ => "",
     };
     let job = format!(
@@ -1210,19 +1376,17 @@ pub fn weekly_defrag(
     //there's currently no way to add new entries yet
     let mut existing_crontab = {
         if crontab.exists() {
-            let mut buff = String::new();
-            let mut f = fs::File::open("/var/spool/cron/crontabs/root")?;
-            f.read_to_string(&mut buff)?;
-            buff.split("\n")
+            let buff = fs::read_to_string("/var/spool/cron/crontabs/root")?;
+            buff.split('\n')
                 .map(|s| s.to_string())
                 .collect::<Vec<String>>()
         } else {
             Vec::new()
         }
     };
-    let existing_job_position = existing_crontab.iter().position(
-        |line| line.contains(mount),
-    );
+    let existing_job_position = existing_crontab
+        .iter()
+        .position(|line| line.contains(mount));
     // If we found an existing job we remove the old and insert the new job
     if let Some(pos) = existing_job_position {
         existing_crontab.remove(pos);
@@ -1230,7 +1394,7 @@ pub fn weekly_defrag(
     existing_crontab.push(job.clone());
 
     //Write back out
-    let mut f = fs::File::create("/var/spool/cron/crontabs/root")?;
+    let mut f = File::create("/var/spool/cron/crontabs/root")?;
     let written_bytes = f.write(&existing_crontab.join("\n").as_bytes())?;
     Ok(written_bytes)
 }
