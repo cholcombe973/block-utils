@@ -28,6 +28,58 @@ use std::str::{from_utf8, FromStr};
 
 pub type BlockResult<T> = Result<T, BlockUtilsError>;
 
+#[cfg(test)]
+mod tests {
+    extern crate nix;
+    extern crate tempdir;
+
+    use self::nix::unistd::{close, ftruncate};
+    use self::tempdir::TempDir;
+
+    use std::fs::File;
+    use std::os::unix::io::IntoRawFd;
+
+    #[test]
+    fn test_create_xfs() {
+        let tmp_dir = TempDir::new("block_utils").unwrap();
+        let file_path = tmp_dir.path().join("xfs_device");
+        let f = File::create(&file_path).expect("Failed to create file");
+        let fd = f.into_raw_fd();
+        // Create a sparse file of 100MB in size to test xfs creation
+        ftruncate(fd, 104_857_600).unwrap();
+        let xfs_options = super::Filesystem::Xfs {
+            stripe_size: None,
+            stripe_width: None,
+            block_size: None,
+            inode_size: Some(512),
+            force: false,
+            agcount: Some(32),
+        };
+        let result = super::format_block_device(&file_path, &xfs_options);
+        println!("Result: {:?}", result);
+        close(fd).expect("Failed to close file descriptor");
+    }
+
+    #[test]
+    fn test_create_ext4() {
+        let tmp_dir = TempDir::new("block_utils").unwrap();
+        let file_path = tmp_dir.path().join("ext4_device");
+        let f = File::create(&file_path).expect("Failed to create file");
+        let fd = f.into_raw_fd();
+        // Create a sparse file of 100MB in size to test ext creation
+        ftruncate(fd, 104_857_600).unwrap();
+        let xfs_options = super::Filesystem::Ext4 {
+            inode_size: 512,
+            stride: Some(2),
+            stripe_width: None,
+            reserved_blocks_percentage: 10,
+        };
+        let result = super::format_block_device(&file_path, &xfs_options);
+        println!("Result: {:?}", result);
+        close(fd).expect("Failed to close file descriptor");
+    }
+}
+
 #[derive(Debug)]
 pub enum BlockUtilsError {
     Error(String),
@@ -514,6 +566,26 @@ pub fn format_block_device(device: &Path, filesystem: &Filesystem) -> BlockResul
         } => {
             let mut arg_list: Vec<String> = Vec::new();
 
+            if let Some(b) = block_size {
+                /*
+                From XFS man page:
+                The default value is 4096 bytes (4 KiB), the minimum  is
+                512,  and the maximum is 65536 (64 KiB).  XFS on Linux currently
+                only supports pagesize or smaller blocks.
+                */
+                let b: u64 = if *b < 512 {
+                    warn!("xfs block size must be 512 bytes minimum.  Correcting");
+                    512
+                } else if *b > 65536 {
+                    warn!("xfs block size must be 65536 bytes maximum.  Correcting");
+                    65536
+                } else {
+                    *b
+                };
+                arg_list.push("-b".to_string());
+                arg_list.push(format!("size={}", b));
+            }
+
             if (*inode_size).is_some() {
                 arg_list.push("-i".to_string());
                 arg_list.push(format!("size={}", inode_size.unwrap()));
@@ -522,6 +594,7 @@ pub fn format_block_device(device: &Path, filesystem: &Filesystem) -> BlockResul
             if *force {
                 arg_list.push("-f".to_string());
             }
+
             if (*stripe_size).is_some() && (*stripe_width).is_some() {
                 arg_list.push("-d".to_string());
                 arg_list.push(format!("su={}", stripe_size.unwrap()));
@@ -545,6 +618,16 @@ pub fn format_block_device(device: &Path, filesystem: &Filesystem) -> BlockResul
             ref stripe_width,
         } => {
             let mut arg_list: Vec<String> = Vec::new();
+
+            if stride.is_some() || stripe_width.is_some() {
+                arg_list.push("-E".to_string());
+                if let Some(stride) = stride {
+                    arg_list.push(format!("stride={}", stride));
+                }
+                if let Some(stripe_width) = stripe_width {
+                    arg_list.push(format!(",stripe_width={}", stripe_width));
+                }
+            }
 
             arg_list.push("-I".to_string());
             arg_list.push(inode_size.to_string());
@@ -672,6 +755,11 @@ pub fn async_format_block_device(
 
             if *force {
                 arg_list.push("-f".to_string());
+            }
+
+            if let Some(b) = block_size {
+                arg_list.push("-b".to_string());
+                arg_list.push(b.to_string());
             }
 
             if (*stripe_size).is_some() && (*stripe_width).is_some() {
@@ -1236,15 +1324,14 @@ pub fn get_raid_info() -> BlockResult<Vec<ScsiInfo>> {
         let buff = fs::read_to_string("/proc/scsi/scsi")?;
 
         match scsi_host_info(buff.as_bytes()) {
-            nom::IResult::Done(_, o) => Ok(o),
-            nom::IResult::Incomplete(needed) => Err(BlockUtilsError::new(format!(
+            Ok((_, value)) => Ok(value),
+            Err(nom::Err::Incomplete(needed)) => Err(BlockUtilsError::new(format!(
                 "Unable to parse /proc/scsi/scsi output: {}.  Needed {:?} more bytes",
                 buff, needed
             ))),
-            nom::IResult::Error(e) => Err(BlockUtilsError::new(format!(
-                "Unable to parse /proc/scsi/scsi output: {}.  Error {}",
-                buff, e
-            ))),
+            Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => Err(BlockUtilsError::new(
+                format!("Unable to parse /proc/scsi/scsi output: {}", buff),
+            )),
         }
     }
 }
@@ -1333,6 +1420,7 @@ pub fn get_device_info(device_path: &Path) -> BlockResult<Device> {
         device_path
     )))
 }
+
 pub fn set_elevator(device_path: &PathBuf, elevator: &Scheduler) -> BlockResult<usize> {
     let device_name = match device_path.file_name() {
         Some(name) => name.to_string_lossy().into_owned(),
