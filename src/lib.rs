@@ -1118,7 +1118,7 @@ pub struct ScsiInfo {
 }
 
 // Taken from https://github.com/hreinecke/lsscsi/blob/master/src/lsscsi.c
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ScsiDeviceType {
     DirectAccess,
     SequentialAccess,
