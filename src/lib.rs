@@ -1430,23 +1430,7 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
                     s.lun = u8::from_str(parts[3])?;
                     for scsi_entries in read_dir(&path)? {
                         let scsi_entry = scsi_entries?;
-                        if scsi_entry.file_name() == OsStr::new("model") {
-                            s.model =
-                                Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
-                        } else if scsi_entry.file_name() == OsStr::new("rev") {
-                            s.rev =
-                                Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
-                        } else if scsi_entry.file_name() == OsStr::new("state") {
-                            s.state =
-                                Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
-                        } else if scsi_entry.file_name() == OsStr::new("type") {
-                            s.scsi_type = ScsiDeviceType::from_str(
-                                fs::read_to_string(&scsi_entry.path())?.trim(),
-                            )?;
-                        } else if scsi_entry.file_name() == OsStr::new("vendor") {
-                            s.vendor =
-                                Vendor::from_str(fs::read_to_string(&scsi_entry.path())?.trim())?;
-                        } else if scsi_entry.file_name() == OsStr::new("block") {
+                        if scsi_entry.file_name() == OsStr::new("block") {
                             let block_path = path.join("block");
                             if block_path.exists() {
                                 let mut device_name = read_dir(&block_path)?.take(1);
@@ -1463,6 +1447,22 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
                             let enclosure_path = path.join(scsi_entry.file_name());
                             let e = get_enclosure_data(&enclosure_path)?;
                             s.enclosure = Some(e);
+                        } else if scsi_entry.file_name() == OsStr::new("model") {
+                            s.model =
+                                Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
+                        } else if scsi_entry.file_name() == OsStr::new("rev") {
+                            s.rev =
+                                Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
+                        } else if scsi_entry.file_name() == OsStr::new("state") {
+                            s.state =
+                                Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
+                        } else if scsi_entry.file_name() == OsStr::new("type") {
+                            s.scsi_type = ScsiDeviceType::from_str(
+                                fs::read_to_string(&scsi_entry.path())?.trim(),
+                            )?;
+                        } else if scsi_entry.file_name() == OsStr::new("vendor") {
+                            s.vendor =
+                                Vendor::from_str(fs::read_to_string(&scsi_entry.path())?.trim())?;
                         }
                     }
                     scsi_devices.push(s);
