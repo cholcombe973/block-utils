@@ -1113,6 +1113,7 @@ pub struct ScsiInfo {
     pub vendor: Vendor,
     pub model: Option<String>,
     pub rev: Option<String>,
+    pub state: Option<String>,
     pub scsi_type: ScsiDeviceType,
     pub scsi_revision: u32,
 }
@@ -1210,6 +1211,7 @@ impl Default for ScsiInfo {
             vendor: Vendor::None,
             model: None,
             rev: None,
+            state: None,
             scsi_type: ScsiDeviceType::NoDevice,
             scsi_revision: 0,
         }
@@ -1310,6 +1312,7 @@ named!(scsi_host_info<&[u8],Vec<ScsiInfo>>,
         vendor: Vendor::from_str(vendor).unwrap(),
         model: Some(scsi_model.to_string()),
         rev: Some(scsi_rev.trim().to_string()),
+        state: None,
         scsi_type: ScsiDeviceType::from_str(&scsi_type.to_string()).unwrap(),
         scsi_revision: revision,
     })
@@ -1340,12 +1343,12 @@ fn test_sort_raid_info() {
     scsi_3.lun = 1;
 
     let scsi_info = vec![scsi_0, scsi_1, scsi_2, scsi_3];
-    sort_raid_info(&scsi_info);
+    sort_scsi_info(&scsi_info);
 }
 
 /// Examine the ScsiInfo devices and associate a host ScsiInfo device if it
 /// exists
-pub fn sort_raid_info(info: &[ScsiInfo]) -> Vec<(ScsiInfo, Option<ScsiInfo>)> {
+pub fn sort_scsi_info(info: &[ScsiInfo]) -> Vec<(ScsiInfo, Option<ScsiInfo>)> {
     let mut sorted: Vec<(ScsiInfo, Option<ScsiInfo>)> = Vec::new();
 
     for dev in info {
@@ -1394,8 +1397,8 @@ fn get_enclosure_data(p: &Path) -> BlockResult<Enclosure> {
     Ok(e)
 }
 
-/// Detects the RAID card in use
-pub fn get_raid_info() -> BlockResult<Vec<ScsiInfo>> {
+/// Gathers all available scsi information
+pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
     // Taken from the strace output of lsscsi
     let scsi_path = Path::new("/sys/bus/scsi/devices");
     if scsi_path.exists() {
@@ -1430,24 +1433,26 @@ pub fn get_raid_info() -> BlockResult<Vec<ScsiInfo>> {
                         if scsi_entry.file_name() == OsStr::new("model") {
                             s.model =
                                 Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
-                        } else if scsi_entry.file_name() == OsStr::new("vendor") {
-                            s.vendor =
-                                Vendor::from_str(fs::read_to_string(&scsi_entry.path())?.trim())?;
                         } else if scsi_entry.file_name() == OsStr::new("rev") {
                             s.rev =
+                                Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
+                        } else if scsi_entry.file_name() == OsStr::new("state") {
+                            s.state =
                                 Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
                         } else if scsi_entry.file_name() == OsStr::new("type") {
                             s.scsi_type = ScsiDeviceType::from_str(
                                 fs::read_to_string(&scsi_entry.path())?.trim(),
                             )?;
+                        } else if scsi_entry.file_name() == OsStr::new("vendor") {
+                            s.vendor =
+                                Vendor::from_str(fs::read_to_string(&scsi_entry.path())?.trim())?;
                         } else if scsi_entry.file_name() == OsStr::new("block") {
                             let block_path = path.join("block");
                             if block_path.exists() {
-                                let block_entry = read_dir(&block_path)?.next();
-                                // There should only be 1 entry in this directory
-                                if let Some(b) = block_entry {
-                                    let b = b?;
-                                    s.block_device = Some(Path::new("/dev").join(b.file_name()));
+                                let mut device_name = read_dir(&block_path)?.take(1);
+                                if let Some(name) = device_name.next() {
+                                    s.block_device =
+                                        Some(Path::new("/dev/").join(name?.file_name()));
                                 }
                             }
                         } else if scsi_entry
@@ -1466,7 +1471,7 @@ pub fn get_raid_info() -> BlockResult<Vec<ScsiInfo>> {
         }
         Ok(scsi_devices)
     } else {
-        // Fallback behavior
+        // Fallback behavior still works but gathers much less information
         let buff = fs::read_to_string("/proc/scsi/scsi")?;
 
         match scsi_host_info(buff.as_bytes()) {
