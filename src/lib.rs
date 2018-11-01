@@ -84,6 +84,7 @@ mod tests {
 pub enum BlockUtilsError {
     Error(String),
     IoError(::std::io::Error),
+    ParseBoolError(::std::str::ParseBoolError),
     ParseIntError(::std::num::ParseIntError),
     SerdeError(serde_json::Error),
     UdevError(::libudev::Error),
@@ -100,6 +101,7 @@ impl err for BlockUtilsError {
         match *self {
             BlockUtilsError::Error(ref e) => &e,
             BlockUtilsError::IoError(ref e) => e.description(),
+            BlockUtilsError::ParseBoolError(ref e) => e.description(),
             BlockUtilsError::ParseIntError(ref e) => e.description(),
             BlockUtilsError::SerdeError(ref e) => e.description(),
             BlockUtilsError::UdevError(ref e) => e.description(),
@@ -109,6 +111,7 @@ impl err for BlockUtilsError {
         match *self {
             BlockUtilsError::Error(_) => None,
             BlockUtilsError::IoError(ref e) => e.cause(),
+            BlockUtilsError::ParseBoolError(ref e) => e.cause(),
             BlockUtilsError::ParseIntError(ref e) => e.cause(),
             BlockUtilsError::SerdeError(ref e) => e.cause(),
             BlockUtilsError::UdevError(ref e) => e.cause(),
@@ -126,6 +129,12 @@ impl BlockUtilsError {
 impl From<::std::io::Error> for BlockUtilsError {
     fn from(err: ::std::io::Error) -> BlockUtilsError {
         BlockUtilsError::IoError(err)
+    }
+}
+
+impl From<::std::str::ParseBoolError> for BlockUtilsError {
+    fn from(err: ::std::str::ParseBoolError) -> BlockUtilsError {
+        BlockUtilsError::ParseBoolError(err)
     }
 }
 
@@ -167,6 +176,7 @@ pub enum Vendor {
     Cisco,
     Hp,
     Lsi,
+    Qemu,
     Vbox, // Virtual Box
 }
 
@@ -181,6 +191,7 @@ impl FromStr for Vendor {
             "hp" => Ok(Vendor::Hp),
             "HPE" => Ok(Vendor::Hp),
             "LSI" => Ok(Vendor::Lsi),
+            "QEMU" => Ok(Vendor::Qemu),
             "VBOX" => Ok(Vendor::Vbox),
             _ => Err(BlockUtilsError::new(format!("Unknown Vendor: {}", s))),
         }
@@ -272,6 +283,7 @@ pub enum FilesystemType {
     Ext2,
     Ext3,
     Ext4,
+    Lvm,
     Xfs,
     Zfs,
     Unknown,
@@ -281,11 +293,13 @@ impl FromStr for FilesystemType {
     type Err = BlockUtilsError;
 
     fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
+        let s = s.to_lowercase();
+        match s.as_ref() {
             "btrfs" => Ok(FilesystemType::Btrfs),
             "ext2" => Ok(FilesystemType::Ext2),
             "ext3" => Ok(FilesystemType::Ext3),
             "ext4" => Ok(FilesystemType::Ext4),
+            "lvm2_member" => Ok(FilesystemType::Lvm),
             "xfs" => Ok(FilesystemType::Xfs),
             "zfs" => Ok(FilesystemType::Zfs),
             _ => Ok(FilesystemType::Unknown),
@@ -300,6 +314,7 @@ impl FilesystemType {
             FilesystemType::Ext2 => "ext2",
             FilesystemType::Ext3 => "ext3",
             FilesystemType::Ext4 => "ext4",
+            FilesystemType::Lvm => "lvm",
             FilesystemType::Xfs => "xfs",
             FilesystemType::Zfs => "zfs",
             FilesystemType::Unknown => "unknown",
@@ -311,6 +326,7 @@ impl FilesystemType {
             FilesystemType::Ext2 => "ext2".to_string(),
             FilesystemType::Ext3 => "ext3".to_string(),
             FilesystemType::Ext4 => "ext4".to_string(),
+            FilesystemType::Lvm => "lvm".to_string(),
             FilesystemType::Xfs => "xfs".to_string(),
             FilesystemType::Zfs => "zfs".to_string(),
             FilesystemType::Unknown => "unknown".to_string(),
@@ -918,18 +934,13 @@ fn get_serial(device: &libudev::Device) -> Option<String> {
     }
 }
 
-fn get_fs_type(device: &libudev::Device) -> FilesystemType {
+fn get_fs_type(device: &libudev::Device) -> BlockResult<FilesystemType> {
     match device.property_value("ID_FS_TYPE") {
         Some(s) => {
             let value = s.to_string_lossy();
-            match value.as_ref() {
-                "btrfs" => FilesystemType::Btrfs,
-                "xfs" => FilesystemType::Xfs,
-                "ext4" => FilesystemType::Ext4,
-                _ => FilesystemType::Unknown,
-            }
+            FilesystemType::from_str(&value)
         }
-        None => FilesystemType::Unknown,
+        None => Ok(FilesystemType::Unknown),
     }
 }
 
@@ -1067,21 +1078,48 @@ pub fn is_block_device(device_path: &PathBuf) -> BlockResult<bool> {
     )))
 }
 
+/// A raid array enclosure
+#[derive(Clone, Debug)]
+pub struct Enclosure {
+    pub active: Option<String>,
+    pub fault: Option<String>,
+    pub power_status: Option<String>,
+    pub slot: u8,
+    pub status: Option<String>,
+    pub enclosure_type: Option<String>,
+}
+
+impl Default for Enclosure {
+    fn default() -> Enclosure {
+        Enclosure {
+            active: None,
+            fault: None,
+            power_status: None,
+            slot: 0,
+            status: None,
+            enclosure_type: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ScsiInfo {
-    host: u8,
-    channel: u8,
-    id: u8,
-    lun: u8,
-    vendor: Vendor,
-    model: Option<String>,
-    rev: Option<String>,
-    scsi_type: ScsiDeviceType,
-    scsi_revision: u32,
+    pub block_device: Option<PathBuf>,
+    pub enclosure: Option<Enclosure>,
+    pub host: u8,
+    pub channel: u8,
+    pub id: u8,
+    pub lun: u8,
+    pub vendor: Vendor,
+    pub model: Option<String>,
+    pub rev: Option<String>,
+    pub state: Option<String>,
+    pub scsi_type: ScsiDeviceType,
+    pub scsi_revision: u32,
 }
 
 // Taken from https://github.com/hreinecke/lsscsi/blob/master/src/lsscsi.c
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub enum ScsiDeviceType {
     DirectAccess,
     SequentialAccess,
@@ -1164,6 +1202,8 @@ impl FromStr for ScsiDeviceType {
 impl Default for ScsiInfo {
     fn default() -> ScsiInfo {
         ScsiInfo {
+            block_device: None,
+            enclosure: None,
             host: 0,
             channel: 0,
             id: 0,
@@ -1171,9 +1211,19 @@ impl Default for ScsiInfo {
             vendor: Vendor::None,
             model: None,
             rev: None,
+            state: None,
             scsi_type: ScsiDeviceType::NoDevice,
             scsi_revision: 0,
         }
+    }
+}
+
+impl PartialEq for ScsiInfo {
+    fn eq(&self, other: &ScsiInfo) -> bool {
+        self.host == other.host
+            && self.channel == other.channel
+            && self.id == other.id
+            && self.lun == other.lun
     }
 }
 
@@ -1253,6 +1303,8 @@ named!(scsi_host_info<&[u8],Vec<ScsiInfo>>,
 
     // the final tuple will be able to use the variables defined previously
     (ScsiInfo{
+        block_device: None,
+        enclosure: None,
         host,
         channel,
         id,
@@ -1260,14 +1312,93 @@ named!(scsi_host_info<&[u8],Vec<ScsiInfo>>,
         vendor: Vendor::from_str(vendor).unwrap(),
         model: Some(scsi_model.to_string()),
         rev: Some(scsi_rev.trim().to_string()),
+        state: None,
         scsi_type: ScsiDeviceType::from_str(&scsi_type.to_string()).unwrap(),
         scsi_revision: revision,
     })
  ))
 );
 
-/// Detects the RAID card in use
-pub fn get_raid_info() -> BlockResult<Vec<ScsiInfo>> {
+#[test]
+fn test_sort_raid_info() {
+    let mut scsi_0 = ScsiInfo::default();
+    scsi_0.host = 0;
+    scsi_0.channel = 0;
+    scsi_0.id = 0;
+    scsi_0.lun = 0;
+    let mut scsi_1 = ScsiInfo::default();
+    scsi_1.host = 2;
+    scsi_1.channel = 0;
+    scsi_1.id = 0;
+    scsi_1.lun = 0;
+    let mut scsi_2 = ScsiInfo::default();
+    scsi_2.host = 2;
+    scsi_2.channel = 1;
+    scsi_2.id = 0;
+    scsi_2.lun = 0;
+    let mut scsi_3 = ScsiInfo::default();
+    scsi_3.host = 2;
+    scsi_3.channel = 1;
+    scsi_3.id = 0;
+    scsi_3.lun = 1;
+
+    let scsi_info = vec![scsi_0, scsi_1, scsi_2, scsi_3];
+    sort_scsi_info(&scsi_info);
+}
+
+/// Examine the ScsiInfo devices and associate a host ScsiInfo device if it
+/// exists
+pub fn sort_scsi_info(info: &[ScsiInfo]) -> Vec<(ScsiInfo, Option<ScsiInfo>)> {
+    let mut sorted: Vec<(ScsiInfo, Option<ScsiInfo>)> = Vec::new();
+
+    for dev in info {
+        // Find the position of the host this device belongs to possibly
+        let host = info
+            .iter()
+            .position(|d| d.host == dev.host && d.channel == 0 && d.id == 0 && d.lun == 0);
+        match host {
+            Some(pos) => {
+                let host_dev = info[pos].clone();
+                // If the host is itself then don't add it
+                if host_dev == *dev {
+                    sorted.push((dev.clone(), None));
+                } else {
+                    sorted.push((dev.clone(), Some(info[pos].clone())));
+                }
+            }
+            None => {
+                sorted.push((dev.clone(), None));
+            }
+        }
+    }
+
+    sorted
+}
+
+fn get_enclosure_data(p: &Path) -> BlockResult<Enclosure> {
+    let mut e = Enclosure::default();
+    for entry in read_dir(p)? {
+        let entry = entry?;
+        if entry.file_name() == OsStr::new("active") {
+            e.active = Some(fs::read_to_string(&entry.path())?.trim().to_string());
+        } else if entry.file_name() == OsStr::new("fault") {
+            e.fault = Some(fs::read_to_string(&entry.path())?.trim().to_string());
+        } else if entry.file_name() == OsStr::new("power_status") {
+            e.power_status = Some(fs::read_to_string(&entry.path())?.trim().to_string());
+        } else if entry.file_name() == OsStr::new("slot") {
+            e.slot = u8::from_str(fs::read_to_string(&entry.path())?.trim())?;
+        } else if entry.file_name() == OsStr::new("status") {
+            e.status = Some(fs::read_to_string(&entry.path())?.trim().to_string());
+        } else if entry.file_name() == OsStr::new("type") {
+            e.enclosure_type = Some(fs::read_to_string(&entry.path())?.trim().to_string());
+        }
+    }
+
+    Ok(e)
+}
+
+/// Gathers all available scsi information
+pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
     // Taken from the strace output of lsscsi
     let scsi_path = Path::new("/sys/bus/scsi/devices");
     if scsi_path.exists() {
@@ -1299,19 +1430,39 @@ pub fn get_raid_info() -> BlockResult<Vec<ScsiInfo>> {
                     s.lun = u8::from_str(parts[3])?;
                     for scsi_entries in read_dir(&path)? {
                         let scsi_entry = scsi_entries?;
-                        if scsi_entry.file_name() == OsStr::new("model") {
+                        if scsi_entry.file_name() == OsStr::new("block") {
+                            let block_path = path.join("block");
+                            if block_path.exists() {
+                                let mut device_name = read_dir(&block_path)?.take(1);
+                                if let Some(name) = device_name.next() {
+                                    s.block_device =
+                                        Some(Path::new("/dev/").join(name?.file_name()));
+                                }
+                            }
+                        } else if scsi_entry
+                            .file_name()
+                            .to_string_lossy()
+                            .starts_with("enclosure_device")
+                        {
+                            let enclosure_path = path.join(scsi_entry.file_name());
+                            let e = get_enclosure_data(&enclosure_path)?;
+                            s.enclosure = Some(e);
+                        } else if scsi_entry.file_name() == OsStr::new("model") {
                             s.model =
                                 Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
-                        } else if scsi_entry.file_name() == OsStr::new("vendor") {
-                            s.vendor =
-                                Vendor::from_str(fs::read_to_string(&scsi_entry.path())?.trim())?;
                         } else if scsi_entry.file_name() == OsStr::new("rev") {
                             s.rev =
+                                Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
+                        } else if scsi_entry.file_name() == OsStr::new("state") {
+                            s.state =
                                 Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
                         } else if scsi_entry.file_name() == OsStr::new("type") {
                             s.scsi_type = ScsiDeviceType::from_str(
                                 fs::read_to_string(&scsi_entry.path())?.trim(),
                             )?;
+                        } else if scsi_entry.file_name() == OsStr::new("vendor") {
+                            s.vendor =
+                                Vendor::from_str(fs::read_to_string(&scsi_entry.path())?.trim())?;
                         }
                     }
                     scsi_devices.push(s);
@@ -1320,7 +1471,7 @@ pub fn get_raid_info() -> BlockResult<Vec<ScsiInfo>> {
         }
         Ok(scsi_devices)
     } else {
-        // Fallback behavior
+        // Fallback behavior still works but gathers much less information
         let buff = fs::read_to_string("/proc/scsi/scsi")?;
 
         match scsi_host_info(buff.as_bytes()) {
@@ -1364,7 +1515,7 @@ pub fn get_all_device_info(devices: &[PathBuf]) -> BlockResult<Vec<Device>> {
                 Some(size) => size,
                 None => 0,
             };
-            let fs_type = get_fs_type(&device);
+            let fs_type = get_fs_type(&device)?;
 
             device_infos.push(Device {
                 id,
@@ -1403,7 +1554,7 @@ pub fn get_device_info(device_path: &Path) -> BlockResult<Device> {
                 Some(size) => size,
                 None => 0,
             };
-            let fs_type = get_fs_type(&device);
+            let fs_type = get_fs_type(&device)?;
 
             return Ok(Device {
                 id,
