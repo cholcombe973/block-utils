@@ -428,7 +428,7 @@ fn run_command<S: AsRef<OsStr>>(command: &str, arg_list: &[S]) -> BlockResult<Ou
 /// Utility function to mount a device at a mount point
 /// NOTE: This assumes the device is formatted at this point.  The mount
 /// will fail if the device isn't formatted.
-pub fn mount_device(device: &Device, mount_point: &str) -> BlockResult<i32> {
+pub fn mount_device(device: &Device, mount_point: &Path) -> BlockResult<i32> {
     let mut arg_list: Vec<String> = Vec::new();
     match device.id {
         Some(id) => {
@@ -439,16 +439,16 @@ pub fn mount_device(device: &Device, mount_point: &str) -> BlockResult<i32> {
             arg_list.push(format!("/dev/{}", device.name));
         }
     };
-    arg_list.push(mount_point.to_string());
+    arg_list.push(mount_point.to_string_lossy().into_owned());
     debug!("mount: {:?}", arg_list);
 
     process_output(&run_command("mount", &arg_list)?)
 }
 
 //Utility function to unmount a device at a mount point
-pub fn unmount_device(mount_point: &str) -> BlockResult<i32> {
+pub fn unmount_device(mount_point: &Path) -> BlockResult<i32> {
     let mut arg_list: Vec<String> = Vec::new();
-    arg_list.push(mount_point.to_string());
+    arg_list.push(mount_point.to_string_lossy().into_owned());
 
     process_output(&run_command("umount", &arg_list)?)
 }
@@ -1598,7 +1598,7 @@ pub fn set_elevator(device_path: &PathBuf, elevator: &Scheduler) -> BlockResult<
     Ok(bytes_written)
 }
 
-pub fn weekly_defrag(mount: &str, fs_type: &FilesystemType, interval: &str) -> BlockResult<usize> {
+pub fn weekly_defrag(mount: &Path, fs_type: &FilesystemType, interval: &str) -> BlockResult<usize> {
     let crontab = Path::new("/var/spool/cron/crontabs/root");
     let defrag_command = match *fs_type {
         FilesystemType::Ext4 => "e4defrag",
@@ -1610,7 +1610,7 @@ pub fn weekly_defrag(mount: &str, fs_type: &FilesystemType, interval: &str) -> B
         "{interval} {cmd} {path}",
         interval = interval,
         cmd = defrag_command,
-        path = mount
+        path = mount.display()
     );
 
     //TODO Change over to using the cronparse library.  Has much better parsing however
@@ -1625,9 +1625,10 @@ pub fn weekly_defrag(mount: &str, fs_type: &FilesystemType, interval: &str) -> B
             Vec::new()
         }
     };
+    let mount_str = mount.to_string_lossy().into_owned();
     let existing_job_position = existing_crontab
         .iter()
-        .position(|line| line.contains(mount));
+        .position(|line| line.contains(&mount_str));
     // If we found an existing job we remove the old and insert the new job
     if let Some(pos) = existing_job_position {
         existing_crontab.remove(pos);
