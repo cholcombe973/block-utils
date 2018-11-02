@@ -1102,6 +1102,42 @@ impl Default for Enclosure {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
+pub enum DeviceState {
+    Blocked,
+    FailFast,
+    Lost,
+    Running,
+    RunningRta,
+}
+
+impl fmt::Display for DeviceState {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        match self {
+            DeviceState::Blocked => write!(f, "blocked"),
+            DeviceState::FailFast => write!(f, "fail_fast"),
+            DeviceState::Lost => write!(f, "lost"),
+            DeviceState::Running => write!(f, "running"),
+            DeviceState::RunningRta => write!(f, "running_rta"),
+        }
+    }
+}
+
+impl FromStr for DeviceState {
+    type Err = BlockUtilsError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "blocked" => Ok(DeviceState::Blocked),
+            "failfast" => Ok(DeviceState::FailFast),
+            "lost" => Ok(DeviceState::Lost),
+            "running" => Ok(DeviceState::Running),
+            "running_rta" => Ok(DeviceState::RunningRta),
+            _ => Err(BlockUtilsError::new(format!("Unknown scsi state: {}", s))),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct ScsiInfo {
     pub block_device: Option<PathBuf>,
@@ -1113,7 +1149,7 @@ pub struct ScsiInfo {
     pub vendor: Vendor,
     pub model: Option<String>,
     pub rev: Option<String>,
-    pub state: Option<String>,
+    pub state: Option<DeviceState>,
     pub scsi_type: ScsiDeviceType,
     pub scsi_revision: u32,
 }
@@ -1454,8 +1490,9 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
                             s.rev =
                                 Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
                         } else if scsi_entry.file_name() == OsStr::new("state") {
-                            s.state =
-                                Some(fs::read_to_string(&scsi_entry.path())?.trim().to_string());
+                            s.state = Some(DeviceState::from_str(
+                                fs::read_to_string(&scsi_entry.path())?.trim(),
+                            )?);
                         } else if scsi_entry.file_name() == OsStr::new("type") {
                             s.scsi_type = ScsiDeviceType::from_str(
                                 fs::read_to_string(&scsi_entry.path())?.trim(),
