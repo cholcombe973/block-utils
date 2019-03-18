@@ -3,6 +3,7 @@ name = "block-utils"
 version = "0.6.0"
 authors = ["Chris Holcombe <xfactor973@gmail.com>"]
 description = "Utilities to work with block devices.  Formatting, getting device info, identifying type of device, etc."
+edition = '2018'
 
 # These URLs point to more information about the repository.
 documentation = "https://docs.rs/block-utils"
@@ -17,7 +18,7 @@ tempdir = "~0.3"
 
 [dependencies]
 fstab = "~0.3"
-libudev = "~0.2"
+udev = "~0.2"
 log = "~0.4"
 nom = "~4.1"
 regex = "~1.0"
