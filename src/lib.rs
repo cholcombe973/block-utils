@@ -1,17 +1,10 @@
-extern crate fstab;
-extern crate libudev;
-#[macro_use]
-extern crate log;
 #[macro_use]
 extern crate nom;
-extern crate regex;
-extern crate serde_json;
-extern crate shellscript;
-extern crate uuid;
 
 pub mod nvme;
 
 use fstab::{FsEntry, FsTab};
+use log::{debug, log, warn};
 use nom::is_digit;
 use regex::Regex;
 use uuid::Uuid;
@@ -30,11 +23,8 @@ pub type BlockResult<T> = Result<T, BlockUtilsError>;
 
 #[cfg(test)]
 mod tests {
-    extern crate nix;
-    extern crate tempdir;
-
-    use self::nix::unistd::{close, ftruncate};
-    use self::tempdir::TempDir;
+    use nix::unistd::{close, ftruncate};
+    use tempdir::TempDir;
 
     use std::fs::File;
     use std::os::unix::io::IntoRawFd;
@@ -87,7 +77,7 @@ pub enum BlockUtilsError {
     ParseBoolError(::std::str::ParseBoolError),
     ParseIntError(::std::num::ParseIntError),
     SerdeError(serde_json::Error),
-    UdevError(::libudev::Error),
+    UdevError(::udev::Error),
 }
 
 impl fmt::Display for BlockUtilsError {
@@ -107,14 +97,14 @@ impl err for BlockUtilsError {
             BlockUtilsError::UdevError(ref e) => e.description(),
         }
     }
-    fn cause(&self) -> Option<&err> {
+    fn source(&self) -> Option<&(dyn err + 'static)>{
         match *self {
             BlockUtilsError::Error(_) => None,
-            BlockUtilsError::IoError(ref e) => e.cause(),
-            BlockUtilsError::ParseBoolError(ref e) => e.cause(),
-            BlockUtilsError::ParseIntError(ref e) => e.cause(),
-            BlockUtilsError::SerdeError(ref e) => e.cause(),
-            BlockUtilsError::UdevError(ref e) => e.cause(),
+            BlockUtilsError::IoError(ref e) => e.source(),
+            BlockUtilsError::ParseBoolError(ref e) => e.source(),
+            BlockUtilsError::ParseIntError(ref e) => e.source(),
+            BlockUtilsError::SerdeError(ref e) => e.source(),
+            BlockUtilsError::UdevError(ref e) => e.source(),
         }
     }
 }
@@ -144,8 +134,8 @@ impl From<::std::num::ParseIntError> for BlockUtilsError {
     }
 }
 
-impl From<::libudev::Error> for BlockUtilsError {
-    fn from(err: ::libudev::Error) -> BlockUtilsError {
+impl From<::udev::Error> for BlockUtilsError {
+    fn from(err: ::udev::Error) -> BlockUtilsError {
         BlockUtilsError::UdevError(err)
     }
 }
@@ -909,7 +899,7 @@ fn test_get_device_info() {
     print!("{:?}", get_device_info(&PathBuf::from("/dev/loop0")));
 }
 
-fn get_size(device: &libudev::Device) -> Option<u64> {
+fn get_size(device: &udev::Device) -> Option<u64> {
     match device.attribute_value("size") {
         // 512 is the block size
         Some(size_str) => {
@@ -920,21 +910,21 @@ fn get_size(device: &libudev::Device) -> Option<u64> {
     }
 }
 
-fn get_uuid(device: &libudev::Device) -> Option<Uuid> {
+fn get_uuid(device: &udev::Device) -> Option<Uuid> {
     match device.property_value("ID_FS_UUID") {
         Some(value) => Uuid::parse_str(&value.to_string_lossy()).ok(),
         None => None,
     }
 }
 
-fn get_serial(device: &libudev::Device) -> Option<String> {
+fn get_serial(device: &udev::Device) -> Option<String> {
     match device.property_value("ID_SERIAL") {
         Some(value) => Some(value.to_string_lossy().into_owned()),
         None => None,
     }
 }
 
-fn get_fs_type(device: &libudev::Device) -> BlockResult<FilesystemType> {
+fn get_fs_type(device: &udev::Device) -> BlockResult<FilesystemType> {
     match device.property_value("ID_FS_TYPE") {
         Some(s) => {
             let value = s.to_string_lossy();
@@ -944,7 +934,7 @@ fn get_fs_type(device: &libudev::Device) -> BlockResult<FilesystemType> {
     }
 }
 
-fn get_media_type(device: &libudev::Device) -> MediaType {
+fn get_media_type(device: &udev::Device) -> MediaType {
     let device_sysname = device.sysname().to_string_lossy();
 
     // Test for loopback
@@ -1032,12 +1022,12 @@ pub fn is_mounted(directory: &Path) -> BlockResult<bool> {
 /// return the device
 pub fn get_block_devices() -> BlockResult<Vec<PathBuf>> {
     let mut block_devices: Vec<PathBuf> = Vec::new();
-    let context = libudev::Context::new()?;
-    let mut enumerator = libudev::Enumerator::new(&context)?;
+    let context = udev::Context::new()?;
+    let mut enumerator = udev::Enumerator::new(&context)?;
     let devices = enumerator.scan_devices()?;
 
     for device in devices {
-        if device.subsystem() == "block" {
+        if device.subsystem() == Some(OsStr::new("block")) {
             let partition = match device.devtype() {
                 Some(devtype) => devtype == "partition",
                 None => false,
@@ -1055,8 +1045,8 @@ pub fn get_block_devices() -> BlockResult<Vec<PathBuf>> {
 
 /// Checks to see if the subsystem this device is using is block
 pub fn is_block_device(device_path: &PathBuf) -> BlockResult<bool> {
-    let context = libudev::Context::new()?;
-    let mut enumerator = libudev::Enumerator::new(&context)?;
+    let context = udev::Context::new()?;
+    let mut enumerator = udev::Enumerator::new(&context)?;
     let devices = enumerator.scan_devices()?;
 
     let sysname = device_path.file_name().ok_or_else(|| {
@@ -1067,7 +1057,7 @@ pub fn is_block_device(device_path: &PathBuf) -> BlockResult<bool> {
     })?;
 
     for device in devices {
-        if sysname == device.sysname() && device.subsystem() == "block" {
+        if sysname == device.sysname() && device.subsystem() == Some(OsStr::new("block")) {
             return Ok(true);
         }
     }
@@ -1529,21 +1519,23 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
 /// This function is more efficient because it only call udev list once
 pub fn get_all_device_info(devices: &[PathBuf]) -> BlockResult<Vec<Device>> {
     let device_names: Vec<&OsStr> = devices
-        .into_iter()
+        .iter()
         .map(|d| d.file_name())
         .filter(|d| d.is_some())
         .map(|d| d.unwrap())
         .collect();
     let mut device_infos: Vec<Device> = Vec::new();
 
-    let context = libudev::Context::new()?;
-    let mut enumerator = libudev::Enumerator::new(&context)?;
+    let context = udev::Context::new()?;
+    let mut enumerator = udev::Enumerator::new(&context)?;
     let host_devices = enumerator.scan_devices()?;
 
     for device in host_devices {
         //let sysname = PathBuf::from(device.sysname());
         //println!("devices.contains({:?})", &sysname);
-        if device_names.contains(&device.sysname()) && device.subsystem() == "block" {
+        if device_names.contains(&device.sysname())
+            && device.subsystem() == Some(OsStr::new("block"))
+        {
             // Ok we're a block device
             let id: Option<Uuid> = get_uuid(&device);
             let serial = get_serial(&device);
@@ -1569,8 +1561,8 @@ pub fn get_all_device_info(devices: &[PathBuf]) -> BlockResult<Vec<Device>> {
 
 /// Returns device information that is gathered with udev.
 pub fn get_device_info(device_path: &Path) -> BlockResult<Device> {
-    let context = libudev::Context::new()?;
-    let mut enumerator = libudev::Enumerator::new(&context)?;
+    let context = udev::Context::new()?;
+    let mut enumerator = udev::Enumerator::new(&context)?;
     let devices = enumerator.scan_devices()?;
 
     let sysname = device_path.file_name().ok_or_else(|| {
@@ -1581,7 +1573,7 @@ pub fn get_device_info(device_path: &Path) -> BlockResult<Device> {
     })?;
 
     for device in devices {
-        if sysname == device.sysname() && device.subsystem() == "block" {
+        if sysname == device.sysname() && device.subsystem() == Some(OsStr::new("block")) {
             // This is going to get complicated
             // Ok we're a block device
             let id: Option<Uuid> = get_uuid(&device);
