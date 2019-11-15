@@ -499,11 +499,14 @@ pub fn get_mountpoint(device: &Path) -> BlockResult<Option<PathBuf>> {
     for line in reader.lines() {
         let l = line?;
         let parts: Vec<&str> = l.split_whitespace().collect();
-        let parts_cpy = parts.clone();
-        for p in parts_cpy {
+        let mut index = -1;
+        for (i, p) in parts.iter().enumerate() {
             if p == &s {
-                return Ok(Some(PathBuf::from(parts[1])));
+                index = i as i64;
             }
+        }
+        if index >= 0 {
+            return Ok(Some(PathBuf::from(parts[1])));
         }
     }
     Ok(None)
