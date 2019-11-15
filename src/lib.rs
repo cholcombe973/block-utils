@@ -195,6 +195,7 @@ pub struct Device {
     pub id: Option<Uuid>,
     pub name: String,
     pub media_type: MediaType,
+    pub device_type: DeviceType,
     pub capacity: u64,
     pub fs_type: FilesystemType,
     pub serial_number: Option<String>,
@@ -264,6 +265,43 @@ pub enum MediaType {
     Ram,
     Virtual,
     Unknown,
+}
+/// What type of device has been detected.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum DeviceType {
+    Disk,
+    Partition,
+    Unknown,
+}
+
+impl FromStr for DeviceType {
+    type Err = BlockUtilsError;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        let s = s.to_lowercase();
+        match s.as_ref() {
+            "disk" => Ok(DeviceType::Disk),
+            "partition" => Ok(DeviceType::Partition),
+            _ => Ok(DeviceType::Unknown),
+        }
+    }
+}
+
+impl DeviceType {
+    pub fn to_str(&self) -> &str {
+        match *self {
+            DeviceType::Disk => "disk",
+            DeviceType::Partition => "partition",
+            DeviceType::Unknown => "unknown",
+        }
+    }
+    pub fn to_string(&self) -> String {
+        match *self {
+            DeviceType::Disk => "disk".to_string(),
+            DeviceType::Partition => "partition".to_string(),
+            DeviceType::Unknown => "unknown".to_string(),
+        }
+    }
 }
 
 /// What type of filesystem
@@ -480,6 +518,7 @@ pub fn get_mounted_devices() -> BlockResult<Vec<Device>> {
                 .to_string_lossy()
                 .into_owned(),
             media_type: MediaType::Unknown,
+            device_type: DeviceType::Unknown,
             capacity: 0,
             fs_type: FilesystemType::from_str(&d.vfs_type)?,
             serial_number: None,
@@ -993,6 +1032,16 @@ fn get_media_type(device: &udev::Device) -> MediaType {
 
     // I give up
     MediaType::Unknown
+}
+
+fn get_device_type(device: &udev::Device) -> BlockResult<DeviceType> {
+    match device.devtype() {
+        Some(s) => {
+            let value = s.to_string_lossy();
+            DeviceType::from_str(&value)
+        }
+        None => Ok(DeviceType::Unknown),
+    }
 }
 
 /// Checks and returns if a particular directory is a mountpoint
@@ -1544,6 +1593,7 @@ pub fn get_all_device_info(devices: &[PathBuf]) -> BlockResult<Vec<Device>> {
             let id: Option<Uuid> = get_uuid(&device);
             let serial = get_serial(&device);
             let media_type = get_media_type(&device);
+            let device_type = get_device_type(&device)?;
             let capacity = match get_size(&device) {
                 Some(size) => size,
                 None => 0,
@@ -1554,6 +1604,7 @@ pub fn get_all_device_info(devices: &[PathBuf]) -> BlockResult<Vec<Device>> {
                 id,
                 name: device.sysname().to_string_lossy().into_owned(),
                 media_type,
+                device_type,
                 capacity,
                 fs_type,
                 serial_number: serial,
@@ -1583,6 +1634,7 @@ pub fn get_device_info(device_path: &Path) -> BlockResult<Device> {
             let id: Option<Uuid> = get_uuid(&device);
             let serial = get_serial(&device);
             let media_type = get_media_type(&device);
+            let device_type = get_device_type(&device)?;
             let capacity = match get_size(&device) {
                 Some(size) => size,
                 None => 0,
@@ -1593,6 +1645,7 @@ pub fn get_device_info(device_path: &Path) -> BlockResult<Device> {
                 id,
                 name: sysname.to_string_lossy().to_string(),
                 media_type,
+                device_type,
                 capacity,
                 fs_type,
                 serial_number: serial,
