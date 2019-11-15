@@ -97,7 +97,7 @@ impl err for BlockUtilsError {
             BlockUtilsError::UdevError(ref e) => e.description(),
         }
     }
-    fn source(&self) -> Option<&(dyn err + 'static)>{
+    fn source(&self) -> Option<&(dyn err + 'static)> {
         match *self {
             BlockUtilsError::Error(_) => None,
             BlockUtilsError::IoError(ref e) => e.source(),
@@ -498,11 +498,15 @@ pub fn get_mountpoint(device: &Path) -> BlockResult<Option<PathBuf>> {
 
     for line in reader.lines() {
         let l = line?;
-        if l.contains(&s) {
-            let parts: Vec<&str> = l.split_whitespace().collect();
-            if !parts.is_empty() {
-                return Ok(Some(PathBuf::from(parts[1])));
+        let parts: Vec<&str> = l.split_whitespace().collect();
+        let mut index = -1;
+        for (i, p) in parts.iter().enumerate() {
+            if p == &s {
+                index = i as i64;
             }
+        }
+        if index >= 0 {
+            return Ok(Some(PathBuf::from(parts[1])));
         }
     }
     Ok(None)
