@@ -1567,6 +1567,69 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
     }
 }
 
+/// returns the device info for the device with the path or symlink given
+pub fn get_device_from_path(dev_path: &Path) -> BlockResult<Option<Device>> {
+    let context = udev::Context::new()?;
+    let mut enumerator = udev::Enumerator::new(&context)?;
+    let host_devices = enumerator.scan_devices()?;
+    for device in host_devices {
+        if let Some(dev_type) = device.devtype() {
+            if dev_type == "disk" || dev_type == "partition" {
+                let name = Path::new("/dev").join(device.sysname());
+                let dev_links = OsStr::new("DEVLINKS");
+                if dev_path == name {
+                    let id: Option<Uuid> = get_uuid(&device);
+                    let serial = get_serial(&device);
+                    let media_type = get_media_type(&device);
+                    let device_type = get_device_type(&device)?;
+                    let capacity = match get_size(&device) {
+                        Some(size) => size,
+                        None => 0,
+                    };
+                    let fs_type = get_fs_type(&device)?;
+
+                    let dev = Device {
+                        id,
+                        name: device.sysname().to_string_lossy().into_owned(),
+                        media_type,
+                        device_type,
+                        capacity,
+                        fs_type,
+                        serial_number: serial,
+                    };
+                    return Ok(Some(dev));
+                }
+                if let Some(links) = device.property_value(dev_links) {
+                    let path = dev_path.to_string_lossy().to_string();
+                    if links.to_string_lossy().contains(&path) {
+                        let id: Option<Uuid> = get_uuid(&device);
+                        let serial = get_serial(&device);
+                        let media_type = get_media_type(&device);
+                        let device_type = get_device_type(&device)?;
+                        let capacity = match get_size(&device) {
+                            Some(size) => size,
+                            None => 0,
+                        };
+                        let fs_type = get_fs_type(&device)?;
+
+                        let dev = Device {
+                            id,
+                            name: device.sysname().to_string_lossy().into_owned(),
+                            media_type,
+                            device_type,
+                            capacity,
+                            fs_type,
+                            serial_number: serial,
+                        };
+                        return Ok(Some(dev));
+                    }
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
 /// Returns device info on every device it can find in the devices slice
 /// The device info may not be in the same order as the slice so be aware.
 /// This function is more efficient because it only call udev list once
