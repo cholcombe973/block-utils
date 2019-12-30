@@ -1567,8 +1567,8 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
     }
 }
 
-/// returns the device info for the device with the path or symlink given
-pub fn get_device_from_path(dev_path: &Path) -> BlockResult<Option<Device>> {
+/// returns the device info and possibly partition entry for the device with the path or symlink given
+pub fn get_device_from_path(dev_path: &Path) -> BlockResult<(Option<u64>, Option<Device>)> {
     let context = udev::Context::new()?;
     let mut enumerator = udev::Enumerator::new(&context)?;
     let host_devices = enumerator.scan_devices()?;
@@ -1578,6 +1578,10 @@ pub fn get_device_from_path(dev_path: &Path) -> BlockResult<Option<Device>> {
                 let name = Path::new("/dev").join(device.sysname());
                 let dev_links = OsStr::new("DEVLINKS");
                 if dev_path == name {
+                    let part_num = match device.property_value("ID_PART_ENTRY_NUMBER") {
+                        Some(value) => value.to_string_lossy().parse::<u64>().ok(),
+                        None => None,
+                    };
                     let id: Option<Uuid> = get_uuid(&device);
                     let serial = get_serial(&device);
                     let media_type = get_media_type(&device);
@@ -1597,11 +1601,15 @@ pub fn get_device_from_path(dev_path: &Path) -> BlockResult<Option<Device>> {
                         fs_type,
                         serial_number: serial,
                     };
-                    return Ok(Some(dev));
+                    return Ok((part_num, Some(dev)));
                 }
                 if let Some(links) = device.property_value(dev_links) {
                     let path = dev_path.to_string_lossy().to_string();
                     if links.to_string_lossy().contains(&path) {
+                        let part_num = match device.property_value("ID_PART_ENTRY_NUMBER") {
+                            Some(value) => value.to_string_lossy().parse::<u64>().ok(),
+                            None => None,
+                        };
                         let id: Option<Uuid> = get_uuid(&device);
                         let serial = get_serial(&device);
                         let media_type = get_media_type(&device);
@@ -1621,7 +1629,7 @@ pub fn get_device_from_path(dev_path: &Path) -> BlockResult<Option<Device>> {
                             fs_type,
                             serial_number: serial,
                         };
-                        return Ok(Some(dev));
+                        return Ok((part_num, Some(dev)));
                     }
                 }
             }
