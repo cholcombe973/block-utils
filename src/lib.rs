@@ -1574,29 +1574,33 @@ pub fn get_parent_devpath_from_path(dev_path: &Path) -> BlockResult<Option<PathB
     let host_devices = enumerator.scan_devices()?;
     for device in host_devices {
         if let Some(dev_type) = device.devtype() {
-            if dev_type == "disk" {
-                return Ok(None);
-            }
-            if dev_type == "partition" {
+            if dev_type == "disk" || dev_type == "partition" {
                 let name = Path::new("/dev").join(device.sysname());
                 let dev_links = OsStr::new("DEVLINKS");
                 if dev_path == name {
                     if let Some(parent_dev) = device.parent() {
-                        let name = Path::new("/dev").join(parent_dev.sysname());
-                        return Ok(Some(name));
+                        if let Some(dev_type) = device.devtype() {
+                            if dev_type == "disk" || dev_type == "partition" {
+                                let name = Path::new("/dev").join(parent_dev.sysname());
+                                return Ok(Some(name));
+                            }
+                        }
                     }
-                    return Ok(None);
                 }
                 if let Some(links) = device.property_value(dev_links) {
                     let path = dev_path.to_string_lossy().to_string();
                     if links.to_string_lossy().contains(&path) {
                         if let Some(parent_dev) = device.parent() {
-                            let name = Path::new("/dev").join(parent_dev.sysname());
-                            return Ok(Some(name));
+                            if let Some(dev_type) = device.devtype() {
+                                if dev_type == "disk" || dev_type == "partition" {
+                                    let name = Path::new("/dev").join(parent_dev.sysname());
+                                    return Ok(Some(name));
+                                }
+                            }
                         }
-                        return Ok(None);
                     }
                 }
+                return Ok(None);
             }
         }
     }
