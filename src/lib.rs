@@ -1635,7 +1635,7 @@ pub fn get_device_from_path(dev_path: &Path) -> BlockResult<(Option<u64>, Option
             }
         }
     }
-    Ok(None)
+    Ok((None, None))
 }
 
 /// Returns device info on every device it can find in the devices slice
