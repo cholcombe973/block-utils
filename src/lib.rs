@@ -1567,6 +1567,116 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
     }
 }
 
+/// get the parent device path from a device path (If not a partition, return None)
+pub fn get_parent_devpath_from_path(dev_path: &Path) -> BlockResult<Option<PathBuf>> {
+    let context = udev::Context::new()?;
+    let mut enumerator = udev::Enumerator::new(&context)?;
+    let host_devices = enumerator.scan_devices()?;
+    for device in host_devices {
+        if let Some(dev_type) = device.devtype() {
+            if dev_type == "disk" || dev_type == "partition" {
+                let name = Path::new("/dev").join(device.sysname());
+                let dev_links = OsStr::new("DEVLINKS");
+                if dev_path == name {
+                    if let Some(parent_dev) = device.parent() {
+                        if let Some(dev_type) = device.devtype() {
+                            if dev_type == "disk" || dev_type == "partition" {
+                                let name = Path::new("/dev").join(parent_dev.sysname());
+                                return Ok(Some(name));
+                            }
+                        }
+                    }
+                }
+                if let Some(links) = device.property_value(dev_links) {
+                    let path = dev_path.to_string_lossy().to_string();
+                    if links.to_string_lossy().contains(&path) {
+                        if let Some(parent_dev) = device.parent() {
+                            if let Some(dev_type) = device.devtype() {
+                                if dev_type == "disk" || dev_type == "partition" {
+                                    let name = Path::new("/dev").join(parent_dev.sysname());
+                                    return Ok(Some(name));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+    Ok(None)
+}
+
+/// returns the device info and possibly partition entry for the device with the path or symlink given
+pub fn get_device_from_path(dev_path: &Path) -> BlockResult<(Option<u64>, Option<Device>)> {
+    let context = udev::Context::new()?;
+    let mut enumerator = udev::Enumerator::new(&context)?;
+    let host_devices = enumerator.scan_devices()?;
+    for device in host_devices {
+        if let Some(dev_type) = device.devtype() {
+            if dev_type == "disk" || dev_type == "partition" {
+                let name = Path::new("/dev").join(device.sysname());
+                let dev_links = OsStr::new("DEVLINKS");
+                if dev_path == name {
+                    let part_num = match device.property_value("ID_PART_ENTRY_NUMBER") {
+                        Some(value) => value.to_string_lossy().parse::<u64>().ok(),
+                        None => None,
+                    };
+                    let id: Option<Uuid> = get_uuid(&device);
+                    let serial = get_serial(&device);
+                    let media_type = get_media_type(&device);
+                    let device_type = get_device_type(&device)?;
+                    let capacity = match get_size(&device) {
+                        Some(size) => size,
+                        None => 0,
+                    };
+                    let fs_type = get_fs_type(&device)?;
+
+                    let dev = Device {
+                        id,
+                        name: device.sysname().to_string_lossy().into_owned(),
+                        media_type,
+                        device_type,
+                        capacity,
+                        fs_type,
+                        serial_number: serial,
+                    };
+                    return Ok((part_num, Some(dev)));
+                }
+                if let Some(links) = device.property_value(dev_links) {
+                    let path = dev_path.to_string_lossy().to_string();
+                    if links.to_string_lossy().contains(&path) {
+                        let part_num = match device.property_value("ID_PART_ENTRY_NUMBER") {
+                            Some(value) => value.to_string_lossy().parse::<u64>().ok(),
+                            None => None,
+                        };
+                        let id: Option<Uuid> = get_uuid(&device);
+                        let serial = get_serial(&device);
+                        let media_type = get_media_type(&device);
+                        let device_type = get_device_type(&device)?;
+                        let capacity = match get_size(&device) {
+                            Some(size) => size,
+                            None => 0,
+                        };
+                        let fs_type = get_fs_type(&device)?;
+
+                        let dev = Device {
+                            id,
+                            name: device.sysname().to_string_lossy().into_owned(),
+                            media_type,
+                            device_type,
+                            capacity,
+                            fs_type,
+                            serial_number: serial,
+                        };
+                        return Ok((part_num, Some(dev)));
+                    }
+                }
+            }
+        }
+    }
+    Ok((None, None))
+}
+
 /// Returns device info on every device it can find in the devices slice
 /// The device info may not be in the same order as the slice so be aware.
 /// This function is more efficient because it only call udev list once
