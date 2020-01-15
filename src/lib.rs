@@ -1567,6 +1567,22 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
     }
 }
 
+/// check if the path is a disk device path
+pub fn is_disk(dev_path: &Path) -> BlockResult<bool> {
+    let context = udev::Context::new()?;
+    let mut enumerator = udev::Enumerator::new(&context)?;
+    let host_devices = enumerator.scan_devices()?;
+    for device in host_devices {
+        if let Some(dev_type) = device.devtype() {
+            let name = Path::new("/dev").join(device.sysname());
+            if dev_type == "disk" && name == dev_path {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
 /// get the parent device path from a device path (If not a partition or disk, return None)
 pub fn get_parent_devpath_from_path(dev_path: &Path) -> BlockResult<Option<PathBuf>> {
     let context = udev::Context::new()?;
