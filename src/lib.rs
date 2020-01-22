@@ -1070,6 +1070,33 @@ pub fn is_mounted(directory: &Path) -> BlockResult<bool> {
 }
 
 /// Scan a system and return all block devices that udev knows about
+/// This function will only retun the udev devices identified as partition.
+/// If it can't discover this it will error on the side of caution and
+/// return the device
+pub fn get_block_partitions() -> BlockResult<Vec<PathBuf>> {
+    let mut block_devices: Vec<PathBuf> = Vec::new();
+    let context = udev::Context::new()?;
+    let mut enumerator = udev::Enumerator::new(&context)?;
+    let devices = enumerator.scan_devices()?;
+
+    for device in devices {
+        if device.subsystem() == Some(OsStr::new("block")) {
+            let partition = match device.devtype() {
+                Some(devtype) => devtype == "partition",
+                None => false,
+            };
+            if partition {
+                let mut path = PathBuf::from("/dev");
+                path.push(device.sysname());
+                block_devices.push(path);
+            }
+        }
+    }
+
+    Ok(block_devices)
+}
+
+/// Scan a system and return all block devices that udev knows about
 /// This function will skip udev devices identified as partition.  If
 /// it can't discover this it will error on the side of caution and
 /// return the device
