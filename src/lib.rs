@@ -1070,6 +1070,33 @@ pub fn is_mounted(directory: &Path) -> BlockResult<bool> {
 }
 
 /// Scan a system and return all block devices that udev knows about
+/// This function will only retun the udev devices identified as partition.
+/// If it can't discover this it will error on the side of caution and
+/// return the device
+pub fn get_block_partitions() -> BlockResult<Vec<PathBuf>> {
+    let mut block_devices: Vec<PathBuf> = Vec::new();
+    let context = udev::Context::new()?;
+    let mut enumerator = udev::Enumerator::new(&context)?;
+    let devices = enumerator.scan_devices()?;
+
+    for device in devices {
+        if device.subsystem() == Some(OsStr::new("block")) {
+            let partition = match device.devtype() {
+                Some(devtype) => devtype == "partition",
+                None => false,
+            };
+            if partition {
+                let mut path = PathBuf::from("/dev");
+                path.push(device.sysname());
+                block_devices.push(path);
+            }
+        }
+    }
+
+    Ok(block_devices)
+}
+
+/// Scan a system and return all block devices that udev knows about
 /// This function will skip udev devices identified as partition.  If
 /// it can't discover this it will error on the side of caution and
 /// return the device
@@ -1567,7 +1594,23 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
     }
 }
 
-/// get the parent device path from a device path (If not a partition, return None)
+/// check if the path is a disk device path
+pub fn is_disk(dev_path: &Path) -> BlockResult<bool> {
+    let context = udev::Context::new()?;
+    let mut enumerator = udev::Enumerator::new(&context)?;
+    let host_devices = enumerator.scan_devices()?;
+    for device in host_devices {
+        if let Some(dev_type) = device.devtype() {
+            let name = Path::new("/dev").join(device.sysname());
+            if dev_type == "disk" && name == dev_path {
+                return Ok(true);
+            }
+        }
+    }
+    Ok(false)
+}
+
+/// get the parent device path from a device path (If not a partition or disk, return None)
 pub fn get_parent_devpath_from_path(dev_path: &Path) -> BlockResult<Option<PathBuf>> {
     let context = udev::Context::new()?;
     let mut enumerator = udev::Enumerator::new(&context)?;
@@ -1579,7 +1622,7 @@ pub fn get_parent_devpath_from_path(dev_path: &Path) -> BlockResult<Option<PathB
                 let dev_links = OsStr::new("DEVLINKS");
                 if dev_path == name {
                     if let Some(parent_dev) = device.parent() {
-                        if let Some(dev_type) = device.devtype() {
+                        if let Some(dev_type) = parent_dev.devtype() {
                             if dev_type == "disk" || dev_type == "partition" {
                                 let name = Path::new("/dev").join(parent_dev.sysname());
                                 return Ok(Some(name));
@@ -1591,7 +1634,7 @@ pub fn get_parent_devpath_from_path(dev_path: &Path) -> BlockResult<Option<PathB
                     let path = dev_path.to_string_lossy().to_string();
                     if links.to_string_lossy().contains(&path) {
                         if let Some(parent_dev) = device.parent() {
-                            if let Some(dev_type) = device.devtype() {
+                            if let Some(dev_type) = parent_dev.devtype() {
                                 if dev_type == "disk" || dev_type == "partition" {
                                     let name = Path::new("/dev").join(parent_dev.sysname());
                                     return Ok(Some(name));
