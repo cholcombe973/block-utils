@@ -1,6 +1,6 @@
 [package]
 name = "block-utils"
-version = "0.6.2"
+version = "0.7.0"
 authors = ["Chris Holcombe <xfactor973@gmail.com>"]
 description = "Utilities to work with block devices.  Formatting, getting device info, identifying type of device, etc."
 edition = '2018'
