@@ -4,8 +4,11 @@ extern crate nom;
 pub mod nvme;
 
 use fstab::{FsEntry, FsTab};
-use log::{debug, log, warn};
-use nom::is_digit;
+use log::{debug, warn};
+use nom::character::{
+    complete::{alpha1, multispace0},
+    is_digit,
+};
 use regex::Regex;
 use uuid::Uuid;
 
@@ -82,21 +85,11 @@ pub enum BlockUtilsError {
 
 impl fmt::Display for BlockUtilsError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(self.description())
+        f.write_str(&self.to_string())
     }
 }
 
 impl err for BlockUtilsError {
-    fn description(&self) -> &str {
-        match *self {
-            BlockUtilsError::Error(ref e) => &e,
-            BlockUtilsError::IoError(ref e) => e.description(),
-            BlockUtilsError::ParseBoolError(ref e) => e.description(),
-            BlockUtilsError::ParseIntError(ref e) => e.description(),
-            BlockUtilsError::SerdeError(ref e) => e.description(),
-            BlockUtilsError::UdevError(ref e) => e.description(),
-        }
-    }
     fn source(&self) -> Option<&(dyn err + 'static)> {
         match *self {
             BlockUtilsError::Error(_) => None,
@@ -1343,36 +1336,49 @@ fn test_scsi_parser() {
     println!("scsi_host_info {:#?}", scsi_host_info(s.as_bytes()));
 }
 
-named!(host<u8>, ws!(preceded!(ws!(tag!("Host: scsi")), take_u8)));
+// Trim all leading and trailing whitespaces, '\t', '\r\' and '\n' characters
+macro_rules! trim (
+    ($i:expr, $submac:ident!( $($args:tt)* )) => (
+        delimited!($i, multispace0, $submac!($($args)*), multispace0);
+    );
+    ($i:expr, $f:expr) => (
+        trim!($i, call!($f));
+    );
+);
+
+named!(
+    host<u8>,
+    trim!(preceded!(trim!(tag!("Host: scsi")), take_u8))
+);
 
 named!(
     model<&str>,
-    ws!(map_res!(
-        preceded!(ws!(tag!("Model:")), take_until_and_consume!("  ")),
+    trim!(map_res!(
+        delimited!(trim!(tag!("Model:")), alpha1, tag!("  ")),
         from_utf8
     ))
 );
 
 named!(
     rev<&str>,
-    ws!(map_res!(
-        preceded!(ws!(tag!("Rev:")), take_until_and_consume!(" ")),
+    trim!(map_res!(
+        delimited!(trim!(tag!("Rev:")), alpha1, tag!(" ")),
         from_utf8
     ))
 );
 
 named!(
     vendor<&str>,
-    ws!(map_res!(
-        preceded!(ws!(tag!("Vendor:")), take_until_and_consume!(" ")),
+    trim!(map_res!(
+        delimited!(trim!(tag!("Vendor:")), alpha1, tag!(" ")),
         from_utf8
     ))
 );
 
 named!(
     scsi_type<&str>,
-    ws!(map_res!(
-        preceded!(ws!(tag!("Type:")), take_until_and_consume!(" ")),
+    trim!(map_res!(
+        delimited!(trim!(tag!("Type:")), alpha1, tag!(" ")),
         from_utf8
     ))
 );
@@ -1387,15 +1393,18 @@ named!(
     map_res!(map_res!(take_while!(is_digit), from_utf8), u32::from_str)
 );
 
-named!(channel<u8>, ws!(preceded!(ws!(tag!("Channel:")), take_u8)));
+named!(
+    channel<u8>,
+    trim!(preceded!(trim!(tag!("Channel:")), take_u8))
+);
 
-named!(scsi_id<u8>, ws!(preceded!(ws!(tag!("Id:")), take_u8)));
+named!(scsi_id<u8>, trim!(preceded!(trim!(tag!("Id:")), take_u8)));
 
-named!(scsi_lun<u8>, ws!(preceded!(ws!(tag!("Lun:")), take_u8)));
+named!(scsi_lun<u8>, trim!(preceded!(trim!(tag!("Lun:")), take_u8)));
 
 named!(
     revision<u32>,
-    ws!(preceded!(ws!(tag!("ANSI  SCSI revision:")), take_u32))
+    trim!(preceded!(trim!(tag!("ANSI  SCSI revision:")), take_u32))
 );
 
 named!(scsi_host_info<&[u8],Vec<ScsiInfo>>,
@@ -1591,7 +1600,7 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
                 "Unable to parse /proc/scsi/scsi output: {}.  Needed {:?} more bytes",
                 buff, needed
             ))),
-            Err(nom::Err::Error(e)) | Err(nom::Err::Failure(e)) => Err(BlockUtilsError::new(
+            Err(nom::Err::Error(_)) | Err(nom::Err::Failure(_)) => Err(BlockUtilsError::new(
                 format!("Unable to parse /proc/scsi/scsi output: {}", buff),
             )),
         }

@@ -1,6 +1,6 @@
+use crate::{BlockResult, BlockUtilsError};
 use std::path::Path;
 use std::process::Command;
-use crate::{BlockResult, BlockUtilsError};
 
 /// Retrieve the error logs from the nvme device
 pub fn get_error_log(dev: &Path) -> BlockResult<String> {
