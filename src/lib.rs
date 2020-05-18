@@ -9,6 +9,11 @@ use nom::character::{
     complete::{alpha1, multispace0},
     is_digit,
 };
+#[cfg(target_os = "linux")]
+use {
+    udev,
+};
+
 use uuid::Uuid;
 
 use std::error::Error as err;
@@ -79,8 +84,6 @@ pub enum BlockUtilsError {
     ParseBoolError(::std::str::ParseBoolError),
     ParseIntError(::std::num::ParseIntError),
     SerdeError(serde_json::Error),
-    #[cfg(target_os = "linux")]
-    UdevError(::udev::Error),
 }
 
 impl fmt::Display for BlockUtilsError {
@@ -97,8 +100,6 @@ impl err for BlockUtilsError {
             BlockUtilsError::ParseBoolError(ref e) => e.source(),
             BlockUtilsError::ParseIntError(ref e) => e.source(),
             BlockUtilsError::SerdeError(ref e) => e.source(),
-            #[cfg(target_os = "linux")]
-            BlockUtilsError::UdevError(ref e) => e.source(),
         }
     }
 }
@@ -125,13 +126,6 @@ impl From<::std::str::ParseBoolError> for BlockUtilsError {
 impl From<::std::num::ParseIntError> for BlockUtilsError {
     fn from(err: ::std::num::ParseIntError) -> BlockUtilsError {
         BlockUtilsError::ParseIntError(err)
-    }
-}
-
-#[cfg(target_os = "linux")]
-impl From<::udev::Error> for BlockUtilsError {
-    fn from(err: ::udev::Error) -> BlockUtilsError {
-        BlockUtilsError::UdevError(err)
     }
 }
 
@@ -1083,8 +1077,7 @@ pub fn is_mounted(directory: &Path) -> BlockResult<bool> {
 #[cfg(target_os = "linux")]
 pub fn get_block_partitions() -> BlockResult<Vec<PathBuf>> {
     let mut block_devices: Vec<PathBuf> = Vec::new();
-    let context = udev::Context::new()?;
-    let mut enumerator = udev::Enumerator::new(&context)?;
+    let mut enumerator = udev::Enumerator::new()?;
     let devices = enumerator.scan_devices()?;
 
     for device in devices {
@@ -1111,8 +1104,7 @@ pub fn get_block_partitions() -> BlockResult<Vec<PathBuf>> {
 #[cfg(target_os = "linux")]
 pub fn get_block_devices() -> BlockResult<Vec<PathBuf>> {
     let mut block_devices: Vec<PathBuf> = Vec::new();
-    let context = udev::Context::new()?;
-    let mut enumerator = udev::Enumerator::new(&context)?;
+    let mut enumerator = udev::Enumerator::new()?;
     let devices = enumerator.scan_devices()?;
 
     for device in devices {
@@ -1135,8 +1127,7 @@ pub fn get_block_devices() -> BlockResult<Vec<PathBuf>> {
 /// Checks to see if the subsystem this device is using is block
 #[cfg(target_os = "linux")]
 pub fn is_block_device(device_path: &PathBuf) -> BlockResult<bool> {
-    let context = udev::Context::new()?;
-    let mut enumerator = udev::Enumerator::new(&context)?;
+    let mut enumerator = udev::Enumerator::new()?;
     let devices = enumerator.scan_devices()?;
 
     let sysname = device_path.file_name().ok_or_else(|| {
@@ -1623,8 +1614,7 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
 /// check if the path is a disk device path
 #[cfg(target_os = "linux")]
 pub fn is_disk(dev_path: &Path) -> BlockResult<bool> {
-    let context = udev::Context::new()?;
-    let mut enumerator = udev::Enumerator::new(&context)?;
+    let mut enumerator = udev::Enumerator::new()?;
     let host_devices = enumerator.scan_devices()?;
     for device in host_devices {
         if let Some(dev_type) = device.devtype() {
@@ -1640,8 +1630,7 @@ pub fn is_disk(dev_path: &Path) -> BlockResult<bool> {
 /// get the parent device path from a device path (If not a partition or disk, return None)
 #[cfg(target_os = "linux")]
 pub fn get_parent_devpath_from_path(dev_path: &Path) -> BlockResult<Option<PathBuf>> {
-    let context = udev::Context::new()?;
-    let mut enumerator = udev::Enumerator::new(&context)?;
+    let mut enumerator = udev::Enumerator::new()?;
     let host_devices = enumerator.scan_devices()?;
     for device in host_devices {
         if let Some(dev_type) = device.devtype() {
@@ -1680,8 +1669,7 @@ pub fn get_parent_devpath_from_path(dev_path: &Path) -> BlockResult<Option<PathB
 /// returns the device info and possibly partition entry for the device with the path or symlink given
 #[cfg(target_os = "linux")]
 pub fn get_device_from_path(dev_path: &Path) -> BlockResult<(Option<u64>, Option<Device>)> {
-    let context = udev::Context::new()?;
-    let mut enumerator = udev::Enumerator::new(&context)?;
+    let mut enumerator = udev::Enumerator::new()?;
     let host_devices = enumerator.scan_devices()?;
     for device in host_devices {
         if let Some(dev_type) = device.devtype() {
@@ -1762,8 +1750,7 @@ pub fn get_all_device_info(devices: &[PathBuf]) -> BlockResult<Vec<Device>> {
         .collect();
     let mut device_infos: Vec<Device> = Vec::new();
 
-    let context = udev::Context::new()?;
-    let mut enumerator = udev::Enumerator::new(&context)?;
+    let mut enumerator = udev::Enumerator::new()?;
     let host_devices = enumerator.scan_devices()?;
 
     for device in host_devices {
@@ -1800,8 +1787,7 @@ pub fn get_all_device_info(devices: &[PathBuf]) -> BlockResult<Vec<Device>> {
 /// Returns device information that is gathered with udev.
 #[cfg(target_os = "linux")]
 pub fn get_device_info(device_path: &Path) -> BlockResult<Device> {
-    let context = udev::Context::new()?;
-    let mut enumerator = udev::Enumerator::new(&context)?;
+    let mut enumerator = udev::Enumerator::new()?;
     let devices = enumerator.scan_devices()?;
 
     let sysname = device_path.file_name().ok_or_else(|| {
