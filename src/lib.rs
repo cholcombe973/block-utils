@@ -9,7 +9,6 @@ use nom::character::{
     complete::{alpha1, multispace0},
     is_digit,
 };
-use regex::Regex;
 use uuid::Uuid;
 
 use std::error::Error as err;
@@ -80,6 +79,7 @@ pub enum BlockUtilsError {
     ParseBoolError(::std::str::ParseBoolError),
     ParseIntError(::std::num::ParseIntError),
     SerdeError(serde_json::Error),
+    #[cfg(target_os = "linux")]
     UdevError(::udev::Error),
 }
 
@@ -97,6 +97,7 @@ impl err for BlockUtilsError {
             BlockUtilsError::ParseBoolError(ref e) => e.source(),
             BlockUtilsError::ParseIntError(ref e) => e.source(),
             BlockUtilsError::SerdeError(ref e) => e.source(),
+            #[cfg(target_os = "linux")]
             BlockUtilsError::UdevError(ref e) => e.source(),
         }
     }
@@ -127,6 +128,7 @@ impl From<::std::num::ParseIntError> for BlockUtilsError {
     }
 }
 
+#[cfg(target_os = "linux")]
 impl From<::udev::Error> for BlockUtilsError {
     fn from(err: ::udev::Error) -> BlockUtilsError {
         BlockUtilsError::UdevError(err)
@@ -933,12 +935,14 @@ pub fn async_format_block_device(
     }
 }
 
+#[cfg(target_os = "linux")]
 #[test]
 fn test_get_device_info() {
     print!("{:?}", get_device_info(&PathBuf::from("/dev/sda5")));
     print!("{:?}", get_device_info(&PathBuf::from("/dev/loop0")));
 }
 
+#[cfg(target_os = "linux")]
 fn get_size(device: &udev::Device) -> Option<u64> {
     match device.attribute_value("size") {
         // 512 is the block size
@@ -950,6 +954,7 @@ fn get_size(device: &udev::Device) -> Option<u64> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn get_uuid(device: &udev::Device) -> Option<Uuid> {
     match device.property_value("ID_FS_UUID") {
         Some(value) => Uuid::parse_str(&value.to_string_lossy()).ok(),
@@ -957,6 +962,7 @@ fn get_uuid(device: &udev::Device) -> Option<Uuid> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn get_serial(device: &udev::Device) -> Option<String> {
     match device.property_value("ID_SERIAL") {
         Some(value) => Some(value.to_string_lossy().into_owned()),
@@ -964,6 +970,7 @@ fn get_serial(device: &udev::Device) -> Option<String> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn get_fs_type(device: &udev::Device) -> BlockResult<FilesystemType> {
     match device.property_value("ID_FS_TYPE") {
         Some(s) => {
@@ -974,7 +981,9 @@ fn get_fs_type(device: &udev::Device) -> BlockResult<FilesystemType> {
     }
 }
 
+#[cfg(target_os = "linux")]
 fn get_media_type(device: &udev::Device) -> MediaType {
+    use regex::Regex;
     let device_sysname = device.sysname().to_string_lossy();
 
     // Test for loopback
@@ -1031,6 +1040,7 @@ fn get_media_type(device: &udev::Device) -> MediaType {
     MediaType::Unknown
 }
 
+#[cfg(target_os = "linux")]
 fn get_device_type(device: &udev::Device) -> BlockResult<DeviceType> {
     match device.devtype() {
         Some(s) => {
@@ -1070,6 +1080,7 @@ pub fn is_mounted(directory: &Path) -> BlockResult<bool> {
 /// This function will only retun the udev devices identified as partition.
 /// If it can't discover this it will error on the side of caution and
 /// return the device
+#[cfg(target_os = "linux")]
 pub fn get_block_partitions() -> BlockResult<Vec<PathBuf>> {
     let mut block_devices: Vec<PathBuf> = Vec::new();
     let context = udev::Context::new()?;
@@ -1097,6 +1108,7 @@ pub fn get_block_partitions() -> BlockResult<Vec<PathBuf>> {
 /// This function will skip udev devices identified as partition.  If
 /// it can't discover this it will error on the side of caution and
 /// return the device
+#[cfg(target_os = "linux")]
 pub fn get_block_devices() -> BlockResult<Vec<PathBuf>> {
     let mut block_devices: Vec<PathBuf> = Vec::new();
     let context = udev::Context::new()?;
@@ -1121,6 +1133,7 @@ pub fn get_block_devices() -> BlockResult<Vec<PathBuf>> {
 }
 
 /// Checks to see if the subsystem this device is using is block
+#[cfg(target_os = "linux")]
 pub fn is_block_device(device_path: &PathBuf) -> BlockResult<bool> {
     let context = udev::Context::new()?;
     let mut enumerator = udev::Enumerator::new(&context)?;
@@ -1608,6 +1621,7 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
 }
 
 /// check if the path is a disk device path
+#[cfg(target_os = "linux")]
 pub fn is_disk(dev_path: &Path) -> BlockResult<bool> {
     let context = udev::Context::new()?;
     let mut enumerator = udev::Enumerator::new(&context)?;
@@ -1624,6 +1638,7 @@ pub fn is_disk(dev_path: &Path) -> BlockResult<bool> {
 }
 
 /// get the parent device path from a device path (If not a partition or disk, return None)
+#[cfg(target_os = "linux")]
 pub fn get_parent_devpath_from_path(dev_path: &Path) -> BlockResult<Option<PathBuf>> {
     let context = udev::Context::new()?;
     let mut enumerator = udev::Enumerator::new(&context)?;
@@ -1663,6 +1678,7 @@ pub fn get_parent_devpath_from_path(dev_path: &Path) -> BlockResult<Option<PathB
 }
 
 /// returns the device info and possibly partition entry for the device with the path or symlink given
+#[cfg(target_os = "linux")]
 pub fn get_device_from_path(dev_path: &Path) -> BlockResult<(Option<u64>, Option<Device>)> {
     let context = udev::Context::new()?;
     let mut enumerator = udev::Enumerator::new(&context)?;
@@ -1736,6 +1752,7 @@ pub fn get_device_from_path(dev_path: &Path) -> BlockResult<(Option<u64>, Option
 /// Returns device info on every device it can find in the devices slice
 /// The device info may not be in the same order as the slice so be aware.
 /// This function is more efficient because it only call udev list once
+#[cfg(target_os = "linux")]
 pub fn get_all_device_info(devices: &[PathBuf]) -> BlockResult<Vec<Device>> {
     let device_names: Vec<&OsStr> = devices
         .iter()
@@ -1781,6 +1798,7 @@ pub fn get_all_device_info(devices: &[PathBuf]) -> BlockResult<Vec<Device>> {
 }
 
 /// Returns device information that is gathered with udev.
+#[cfg(target_os = "linux")]
 pub fn get_device_info(device_path: &Path) -> BlockResult<Device> {
     let context = udev::Context::new()?;
     let mut enumerator = udev::Enumerator::new(&context)?;
