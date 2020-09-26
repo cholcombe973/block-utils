@@ -3,7 +3,7 @@ extern crate nom;
 
 pub mod nvme;
 
-use fstab::FsTab;
+use fstab::{FsEntry, FsTab};
 use log::{debug, warn};
 use nom::character::{
     complete::{alpha1, multispace0},
@@ -211,6 +211,22 @@ impl Device {
             capacity,
             fs_type,
             serial_number: serial,
+        })
+    }
+
+    fn from_fs_entry(fs_entry: FsEntry) -> BlockResult<Self> {
+        Ok(Device {
+            id: None,
+            name: Path::new(&fs_entry.fs_spec)
+                .file_name()
+                .unwrap_or_else(|| OsStr::new(""))
+                .to_string_lossy()
+                .into_owned(),
+            media_type: MediaType::Unknown,
+            device_type: DeviceType::Unknown,
+            capacity: 0,
+            fs_type: FilesystemType::from_str(&fs_entry.vfs_type)?,
+            serial_number: None,
         })
     }
 }
@@ -523,31 +539,21 @@ pub fn get_mount_device(mount_dir: impl AsRef<Path>) -> BlockResult<Option<PathB
 }
 
 /// Parse mtab and return iterator over all mounted block devices not including LVM
+///
+/// Lazy version of get_mounted_devices
 pub fn get_mounted_devices_iter() -> BlockResult<impl Iterator<Item = BlockResult<Device>>> {
     Ok(FsTab::new(Path::new(MTAB_PATH))
         .get_entries()?
         .into_iter()
         .filter(|d| d.fs_spec.contains("/dev/"))
         .filter(|d| !d.fs_spec.contains("mapper"))
-        .map(|fs_entry| -> BlockResult<Device> {
-            Ok(Device {
-                id: None,
-                name: Path::new(&fs_entry.fs_spec)
-                    .file_name()
-                    .unwrap_or_else(|| OsStr::new(""))
-                    .to_string_lossy()
-                    .into_owned(),
-                media_type: MediaType::Unknown,
-                device_type: DeviceType::Unknown,
-                capacity: 0,
-                fs_type: FilesystemType::from_str(&fs_entry.vfs_type)?,
-                serial_number: None,
-            })
-        }))
+        .map(Device::from_fs_entry))
 }
 /// Parse mtab and return all mounted block devices not including LVM
+///
+/// Non-lazy version of get_mounted_devices_iter
 pub fn get_mounted_devices() -> BlockResult<Vec<Device>> {
-    get_mounted_devices_iter()?.collect::<BlockResult<Vec<_>>>()
+    get_mounted_devices_iter()?.collect()
 }
 
 /// Parse mtab and return the mountpoint the device is mounted at.
@@ -1745,25 +1751,7 @@ pub fn get_device_from_path(
                         Some(value) => value.to_string_lossy().parse::<u64>().ok(),
                         None => None,
                     };
-                    let id: Option<Uuid> = get_uuid(&device);
-                    let serial = get_serial(&device);
-                    let media_type = get_media_type(&device);
-                    let device_type = get_device_type(&device)?;
-                    let capacity = match get_size(&device) {
-                        Some(size) => size,
-                        None => 0,
-                    };
-                    let fs_type = get_fs_type(&device)?;
-
-                    let dev = Device {
-                        id,
-                        name: device.sysname().to_string_lossy().into_owned(),
-                        media_type,
-                        device_type,
-                        capacity,
-                        fs_type,
-                        serial_number: serial,
-                    };
+                    let dev = Device::from_udev_device(device)?;
                     return Ok((part_num, Some(dev)));
                 }
                 if let Some(links) = device.property_value(dev_links) {
@@ -1773,25 +1761,7 @@ pub fn get_device_from_path(
                             Some(value) => value.to_string_lossy().parse::<u64>().ok(),
                             None => None,
                         };
-                        let id: Option<Uuid> = get_uuid(&device);
-                        let serial = get_serial(&device);
-                        let media_type = get_media_type(&device);
-                        let device_type = get_device_type(&device)?;
-                        let capacity = match get_size(&device) {
-                            Some(size) => size,
-                            None => 0,
-                        };
-                        let fs_type = get_fs_type(&device)?;
-
-                        let dev = Device {
-                            id,
-                            name: device.sysname().to_string_lossy().into_owned(),
-                            media_type,
-                            device_type,
-                            capacity,
-                            fs_type,
-                            serial_number: serial,
-                        };
+                        let dev = Device::from_udev_device(device)?;
                         return Ok((part_num, Some(dev)));
                     }
                 }
