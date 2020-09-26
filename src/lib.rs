@@ -9,11 +9,6 @@ use nom::character::{
     complete::{alpha1, multispace0},
     is_digit,
 };
-#[cfg(target_os = "linux")]
-use udev;
-
-use uuid::Uuid;
-
 use std::error::Error as err;
 use std::ffi::OsStr;
 use std::fmt;
@@ -23,6 +18,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
 use std::str::{from_utf8, FromStr};
+use uuid::Uuid;
 
 pub type BlockResult<T> = Result<T, BlockUtilsError>;
 
@@ -192,6 +188,31 @@ pub struct Device {
     pub capacity: u64,
     pub fs_type: FilesystemType,
     pub serial_number: Option<String>,
+}
+
+impl Device {
+    fn from_udev_device(device: udev::Device) -> BlockResult<Self> {
+        let sys_name = device.sysname();
+        let id: Option<Uuid> = get_uuid(&device);
+        let serial = get_serial(&device);
+        let media_type = get_media_type(&device);
+        let device_type = get_device_type(&device)?;
+        let capacity = match get_size(&device) {
+            Some(size) => size,
+            None => 0,
+        };
+        let fs_type = get_fs_type(&device)?;
+
+        Ok(Device {
+            id,
+            name: sys_name.to_string_lossy().to_string(),
+            media_type,
+            device_type,
+            capacity,
+            fs_type,
+            serial_number: serial,
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -1076,31 +1097,58 @@ pub fn is_mounted(directory: impl AsRef<Path>) -> BlockResult<bool> {
     })
 }
 
+/// Scan a system and return iterator over all block devices that udev knows about
+/// This function will only return the udev devices identified as `requested_dev_type`
+/// (disk or partition)
+/// If it can't discover this it will error on the side of caution and
+/// return the device
+///
+#[cfg(target_os = "linux")]
+fn get_specific_block_device_iter(
+    requested_dev_type: DeviceType,
+) -> BlockResult<impl Iterator<Item = PathBuf>> {
+    Ok(udev::Enumerator::new()?
+        .scan_devices()?
+        .filter_map(move |device| {
+            if device.subsystem() == Some(OsStr::new("block")) {
+                let is_partition = device.devtype().map_or(false, |d| d == "partition");
+                let dev_type = if is_partition {
+                    DeviceType::Partition
+                } else {
+                    DeviceType::Disk
+                };
+
+                if dev_type == requested_dev_type {
+                    Some(PathBuf::from("/dev").join(device.sysname()))
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        }))
+}
+
+/// Scan a system and return iterator over all block devices that udev knows about
+/// This function will only retun the udev devices identified as partition.
+/// If it can't discover this it will error on the side of caution and
+/// return the device
+///
+/// Lazy version of `get_block_partitions`
+#[cfg(target_os = "linux")]
+pub fn get_block_partitions_iter() -> BlockResult<impl Iterator<Item = PathBuf>> {
+    get_specific_block_device_iter(DeviceType::Partition)
+}
+
 /// Scan a system and return all block devices that udev knows about
 /// This function will only retun the udev devices identified as partition.
 /// If it can't discover this it will error on the side of caution and
 /// return the device
+///
+/// Non-lazy version of `get_block_partitions`
 #[cfg(target_os = "linux")]
 pub fn get_block_partitions() -> BlockResult<Vec<PathBuf>> {
-    let mut block_devices: Vec<PathBuf> = Vec::new();
-    let mut enumerator = udev::Enumerator::new()?;
-    let devices = enumerator.scan_devices()?;
-
-    for device in devices {
-        if device.subsystem() == Some(OsStr::new("block")) {
-            let partition = match device.devtype() {
-                Some(devtype) => devtype == "partition",
-                None => false,
-            };
-            if partition {
-                let mut path = PathBuf::from("/dev");
-                path.push(device.sysname());
-                block_devices.push(path);
-            }
-        }
-    }
-
-    Ok(block_devices)
+    get_block_partitions_iter().map(|i| i.collect())
 }
 
 /// Scan a system and return iterator over all block devices that udev knows about
@@ -1111,22 +1159,7 @@ pub fn get_block_partitions() -> BlockResult<Vec<PathBuf>> {
 /// Lazy version of `get_block_devices()`
 #[cfg(target_os = "linux")]
 pub fn get_block_devices_iter() -> BlockResult<impl Iterator<Item = PathBuf>> {
-    let mut enumerator = udev::Enumerator::new()?;
-    Ok(enumerator.scan_devices()?.filter_map(|device| {
-        if device.subsystem() == Some(OsStr::new("block")) {
-            let is_partition = device.devtype().map_or(false, |d| d == "partition");
-
-            if !is_partition {
-                let mut path = PathBuf::from("/dev");
-                path.push(device.sysname());
-                Some(path)
-            } else {
-                None
-            }
-        } else {
-            None
-        }
-    }))
+    get_specific_block_device_iter(DeviceType::Disk)
 }
 
 /// Scan a system and return all block devices that udev knows about
@@ -1487,10 +1520,12 @@ fn test_sort_raid_info() {
 
 /// Examine the ScsiInfo devices and associate a host ScsiInfo device if it
 /// exists
-pub fn sort_scsi_info(info: &[ScsiInfo]) -> Vec<(ScsiInfo, Option<ScsiInfo>)> {
-    let mut sorted: Vec<(ScsiInfo, Option<ScsiInfo>)> = Vec::new();
-
-    for dev in info {
+///
+/// Lazy version of `sort_scsi_info`
+pub fn sort_scsi_info_iter<'a>(
+    info: &'a [ScsiInfo],
+) -> impl Iterator<Item = (ScsiInfo, Option<ScsiInfo>)> + 'a {
+    info.iter().map(move |dev| {
         // Find the position of the host this device belongs to possibly
         let host = info
             .iter()
@@ -1500,18 +1535,22 @@ pub fn sort_scsi_info(info: &[ScsiInfo]) -> Vec<(ScsiInfo, Option<ScsiInfo>)> {
                 let host_dev = info[pos].clone();
                 // If the host is itself then don't add it
                 if host_dev == *dev {
-                    sorted.push((dev.clone(), None));
+                    (dev.clone(), None)
                 } else {
-                    sorted.push((dev.clone(), Some(info[pos].clone())));
+                    (dev.clone(), Some(info[pos].clone()))
                 }
             }
-            None => {
-                sorted.push((dev.clone(), None));
-            }
+            None => (dev.clone(), None),
         }
-    }
+    })
+}
 
-    sorted
+/// Examine the ScsiInfo devices and associate a host ScsiInfo device if it
+/// exists
+///
+/// Non-lazy version of `sort_scsi_info_iter`
+pub fn sort_scsi_info(info: &[ScsiInfo]) -> Vec<(ScsiInfo, Option<ScsiInfo>)> {
+    sort_scsi_info_iter(info).collect()
 }
 
 fn get_enclosure_data(p: impl AsRef<Path>) -> BlockResult<Enclosure> {
@@ -1646,6 +1685,23 @@ pub fn is_disk(dev_path: impl AsRef<Path>) -> BlockResult<bool> {
 /// get the parent device path from a device path (If not a partition or disk, return None)
 #[cfg(target_os = "linux")]
 pub fn get_parent_devpath_from_path(dev_path: impl AsRef<Path>) -> BlockResult<Option<PathBuf>> {
+    let get_parent_name = |device: &udev::Device| {
+        if let Some(parent_dev) = device.parent() {
+            if let Some(dev_type) = parent_dev.devtype() {
+                if dev_type == "disk" || dev_type == "partition" {
+                    let name = Path::new("/dev").join(parent_dev.sysname());
+                    Some(name)
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        }
+    };
+
     let mut enumerator = udev::Enumerator::new()?;
     let host_devices = enumerator.scan_devices()?;
     for device in host_devices {
@@ -1654,25 +1710,15 @@ pub fn get_parent_devpath_from_path(dev_path: impl AsRef<Path>) -> BlockResult<O
                 let name = Path::new("/dev").join(device.sysname());
                 let dev_links = OsStr::new("DEVLINKS");
                 if dev_path.as_ref() == name {
-                    if let Some(parent_dev) = device.parent() {
-                        if let Some(dev_type) = parent_dev.devtype() {
-                            if dev_type == "disk" || dev_type == "partition" {
-                                let name = Path::new("/dev").join(parent_dev.sysname());
-                                return Ok(Some(name));
-                            }
-                        }
+                    if let Some(name) = get_parent_name(&device) {
+                        return Ok(Some(name));
                     }
                 }
                 if let Some(links) = device.property_value(dev_links) {
                     let path = dev_path.as_ref().to_string_lossy().to_string();
                     if links.to_string_lossy().contains(&path) {
-                        if let Some(parent_dev) = device.parent() {
-                            if let Some(dev_type) = parent_dev.devtype() {
-                                if dev_type == "disk" || dev_type == "partition" {
-                                    let name = Path::new("/dev").join(parent_dev.sysname());
-                                    return Ok(Some(name));
-                                }
-                            }
+                        if let Some(name) = get_parent_name(&device) {
+                            return Ok(Some(name));
                         }
                     }
                 }
@@ -1755,100 +1801,72 @@ pub fn get_device_from_path(
     Ok((None, None))
 }
 
+/// Returns iterator over device info on every device it can find in the devices slice
+/// The device info may not be in the same order as the slice so be aware.
+/// This function is more efficient because it only call udev list once
+///
+/// Lazy version of get_all_device_info
+#[cfg(target_os = "linux")]
+pub fn get_all_device_info_iter<P, T>(
+    devices: T,
+) -> BlockResult<impl Iterator<Item = BlockResult<Device>>>
+where
+    P: AsRef<Path>,
+    T: AsRef<[P]>,
+{
+    let device_names = devices
+        .as_ref()
+        .iter()
+        .filter_map(|d| d.as_ref().file_name().map(OsStr::to_owned))
+        .collect::<Vec<_>>();
+
+    Ok(udev::Enumerator::new()?.scan_devices()?.filter_map(
+        move |device| -> Option<BlockResult<Device>> {
+            if device_names.contains(&device.sysname().to_owned())
+                && device.subsystem() == Some(OsStr::new("block"))
+            {
+                // Ok we're a block device
+                Some(Device::from_udev_device(device))
+            } else {
+                None
+            }
+        },
+    ))
+}
+
 /// Returns device info on every device it can find in the devices slice
 /// The device info may not be in the same order as the slice so be aware.
 /// This function is more efficient because it only call udev list once
+///
+/// Non-lazy version of `get_all_device_info_iter`
 #[cfg(target_os = "linux")]
 pub fn get_all_device_info<P, T>(devices: T) -> BlockResult<Vec<Device>>
 where
     P: AsRef<Path>,
     T: AsRef<[P]>,
 {
-    let device_names: Vec<&OsStr> = devices
-        .as_ref()
-        .iter()
-        .map(|d| d.as_ref().file_name())
-        .filter(|d| d.is_some())
-        .map(|d| d.unwrap())
-        .collect();
-    let mut device_infos: Vec<Device> = Vec::new();
-
-    let mut enumerator = udev::Enumerator::new()?;
-    let host_devices = enumerator.scan_devices()?;
-
-    for device in host_devices {
-        //let sysname = PathBuf::from(device.sysname());
-        //println!("devices.contains({:?})", &sysname);
-        if device_names.contains(&device.sysname())
-            && device.subsystem() == Some(OsStr::new("block"))
-        {
-            // Ok we're a block device
-            let id: Option<Uuid> = get_uuid(&device);
-            let serial = get_serial(&device);
-            let media_type = get_media_type(&device);
-            let device_type = get_device_type(&device)?;
-            let capacity = match get_size(&device) {
-                Some(size) => size,
-                None => 0,
-            };
-            let fs_type = get_fs_type(&device)?;
-
-            device_infos.push(Device {
-                id,
-                name: device.sysname().to_string_lossy().into_owned(),
-                media_type,
-                device_type,
-                capacity,
-                fs_type,
-                serial_number: serial,
-            });
-        }
-    }
-    Ok(device_infos)
+    get_all_device_info_iter(devices).map(|i| i.collect::<BlockResult<Vec<Device>>>())?
 }
 
 /// Returns device information that is gathered with udev.
 #[cfg(target_os = "linux")]
 pub fn get_device_info(device_path: impl AsRef<Path>) -> BlockResult<Device> {
-    let mut enumerator = udev::Enumerator::new()?;
-    let devices = enumerator.scan_devices()?;
-
-    let sysname = device_path.as_ref().file_name().ok_or_else(|| {
-        BlockUtilsError::new(format!(
-            "Unable to get file_name on device {:?}",
-            device_path.as_ref()
-        ))
-    })?;
-
-    for device in devices {
-        if sysname == device.sysname() && device.subsystem() == Some(OsStr::new("block")) {
-            // This is going to get complicated
-            // Ok we're a block device
-            let id: Option<Uuid> = get_uuid(&device);
-            let serial = get_serial(&device);
-            let media_type = get_media_type(&device);
-            let device_type = get_device_type(&device)?;
-            let capacity = match get_size(&device) {
-                Some(size) => size,
-                None => 0,
-            };
-            let fs_type = get_fs_type(&device)?;
-
-            return Ok(Device {
-                id,
-                name: sysname.to_string_lossy().to_string(),
-                media_type,
-                device_type,
-                capacity,
-                fs_type,
-                serial_number: serial,
-            });
-        }
-    }
-    Err(BlockUtilsError::new(format!(
-        "Unable to find device with name {:?}",
+    let error_message = format!(
+        "Unable to get file_name on device {:?}",
         device_path.as_ref()
-    )))
+    );
+    let sysname = device_path
+        .as_ref()
+        .file_name()
+        .ok_or_else(|| BlockUtilsError::new(error_message.clone()))?;
+
+    udev::Enumerator::new()?
+        .scan_devices()?
+        .find(|udev_device| {
+            sysname == udev_device.sysname() && udev_device.subsystem() == Some(OsStr::new("block"))
+        })
+        .ok_or_else(|| BlockUtilsError::new(error_message))
+        .and_then(Device::from_udev_device)
 }
 
 pub fn set_elevator(device_path: impl AsRef<Path>, elevator: &Scheduler) -> BlockResult<usize> {
