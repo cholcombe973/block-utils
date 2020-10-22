@@ -84,7 +84,14 @@ pub enum BlockUtilsError {
 
 impl fmt::Display for BlockUtilsError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str(&self.to_string())
+        f.write_str("BlockUtilsError : ")?;
+        match *self {
+            BlockUtilsError::Error(ref e) => f.write_str(e),
+            BlockUtilsError::IoError(ref e) => f.write_str(&e.to_string()),
+            BlockUtilsError::ParseBoolError(ref e) => f.write_str(&e.to_string()),
+            BlockUtilsError::ParseIntError(ref e) => f.write_str(&e.to_string()),
+            BlockUtilsError::SerdeError(ref e) => f.write_str(&e.to_string()),
+        }
     }
 }
 
