@@ -9,6 +9,7 @@ use nom::character::{
     complete::{alpha1, multispace0},
     is_digit,
 };
+use std::collections::HashMap;
 use std::error::Error as err;
 use std::ffi::OsStr;
 use std::fmt;
@@ -1211,6 +1212,56 @@ pub fn is_block_device(device_path: impl AsRef<Path>) -> BlockResult<bool> {
     )))
 }
 
+/// Get property value by key `tag` for device with devpath `device_path` (like "/dev/sda") if present
+#[cfg(target_os = "linux")]
+pub fn get_block_dev_property(
+    device_path: impl AsRef<Path>,
+    tag: &str,
+) -> BlockResult<Option<String>> {
+    let syspath = device_path
+        .as_ref()
+        .file_name()
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            BlockUtilsError::new(format!(
+                "Unable to get file_name on device {:?}",
+                device_path.as_ref()
+            ))
+        })?;
+
+    Ok(udev::Device::from_syspath(&syspath)?
+        .property_value(tag)
+        .map(|value| value.to_string_lossy().to_string()))
+}
+
+/// Get properties for device with devpath `device_path` (like "/dev/sda") if present
+#[cfg(target_os = "linux")]
+pub fn get_block_dev_properties(
+    device_path: impl AsRef<Path>,
+) -> BlockResult<HashMap<String, String>> {
+    let syspath = device_path
+        .as_ref()
+        .file_name()
+        .map(PathBuf::from)
+        .ok_or_else(|| {
+            BlockUtilsError::new(format!(
+                "Unable to get file_name on device {:?}",
+                device_path.as_ref()
+            ))
+        })?;
+
+    let udev_device = udev::Device::from_syspath(&syspath)?;
+    Ok(udev_device
+        .clone()
+        .properties()
+        .map(|property| {
+            let key = property.name().to_string_lossy().to_string();
+            let value = property.value().to_string_lossy().to_string();
+            (key, value)
+        })
+        .collect()) // We can't return iterator because `udev_device` doesn't live long enough
+}
+
 /// A raid array enclosure
 #[derive(Clone, Debug)]
 pub struct Enclosure {
@@ -1695,26 +1746,26 @@ pub fn is_disk(dev_path: impl AsRef<Path>) -> BlockResult<bool> {
     Ok(false)
 }
 
-/// get the parent device path from a device path (If not a partition or disk, return None)
-#[cfg(target_os = "linux")]
-pub fn get_parent_devpath_from_path(dev_path: impl AsRef<Path>) -> BlockResult<Option<PathBuf>> {
-    let get_parent_name = |device: &udev::Device| {
-        if let Some(parent_dev) = device.parent() {
-            if let Some(dev_type) = parent_dev.devtype() {
-                if dev_type == "disk" || dev_type == "partition" {
-                    let name = Path::new("/dev").join(parent_dev.sysname());
-                    Some(name)
-                } else {
-                    None
-                }
+fn get_parent_name(device: &udev::Device) -> Option<PathBuf> {
+    if let Some(parent_dev) = device.parent() {
+        if let Some(dev_type) = parent_dev.devtype() {
+            if dev_type == "disk" || dev_type == "partition" {
+                let name = Path::new("/dev").join(parent_dev.sysname());
+                Some(name)
             } else {
                 None
             }
         } else {
             None
         }
-    };
+    } else {
+        None
+    }
+}
 
+/// get the parent device path from a device path (If not a partition or disk, return None)
+#[cfg(target_os = "linux")]
+pub fn get_parent_devpath_from_path(dev_path: impl AsRef<Path>) -> BlockResult<Option<PathBuf>> {
     let mut enumerator = udev::Enumerator::new()?;
     let host_devices = enumerator.scan_devices()?;
     for device in host_devices {
@@ -1739,6 +1790,27 @@ pub fn get_parent_devpath_from_path(dev_path: impl AsRef<Path>) -> BlockResult<O
         }
     }
     Ok(None)
+}
+
+/// Get the children devices paths from a device path
+#[cfg(target_os = "linux")]
+pub fn get_children_devpaths_from_path(dev_path: impl AsRef<Path>) -> BlockResult<Vec<PathBuf>> {
+    get_children_devpaths_from_path_iter(dev_path).map(|iter| iter.collect())
+}
+
+/// Get the children devices paths from a device path
+/// Note: It has square algorithmic complexity
+#[cfg(target_os = "linux")]
+pub fn get_children_devpaths_from_path_iter(
+    dev_path: impl AsRef<Path>,
+) -> BlockResult<impl Iterator<Item = PathBuf>> {
+    Ok(get_block_devices_iter()?.filter(move |device| {
+        if let Ok(Some(device)) = get_parent_devpath_from_path(device) {
+            dev_path.as_ref() == &device
+        } else {
+            false
+        }
+    }))
 }
 
 /// returns the device info and possibly partition entry for the device with the path or symlink given
