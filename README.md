@@ -1,4 +1,5 @@
 # block-utils
+![Rust](https://github.com/cholcombe973/block-utils/workflows/Rust/badge.svg)
 [![Docs](https://docs.rs/block-utils/badge.svg)](https://docs.rs/block-utils)[![Crates.io](https://img.shields.io/crates/v/block-utils.svg)](https://crates.io/crates/block-utils)
 
 Rust utilities for working with block devices.  Basic support has been added
