@@ -1804,9 +1804,9 @@ pub fn get_children_devpaths_from_path(dev_path: impl AsRef<Path>) -> BlockResul
 pub fn get_children_devpaths_from_path_iter(
     dev_path: impl AsRef<Path>,
 ) -> BlockResult<impl Iterator<Item = PathBuf>> {
-    Ok(get_block_devices_iter()?.filter(move |device| {
-        if let Ok(Some(device)) = get_parent_devpath_from_path(device) {
-            dev_path.as_ref() == &device
+    Ok(get_block_partitions_iter()?.filter(move |partition| {
+        if let Ok(Some(parent_device)) = get_parent_devpath_from_path(partition) {
+            dev_path.as_ref() == &parent_device
         } else {
             false
         }
