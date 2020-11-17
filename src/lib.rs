@@ -1212,22 +1212,38 @@ pub fn is_block_device(device_path: impl AsRef<Path>) -> BlockResult<bool> {
     )))
 }
 
+/// Get sys path (like `/sys/class/block/loop0`) by dev path (like `/dev/loop0`).
+/// Dev path should refer to block device.
+/// Returns error if sys path doesn't exist.
+fn dev_path_to_sys_path(dev_path: impl AsRef<Path>) -> BlockResult<PathBuf> {
+    let sys_path = dev_path
+        .as_ref()
+        .file_name()
+        .map(|name| PathBuf::from("/sys/class/block").join(name))
+        .ok_or_else(|| {
+            BlockUtilsError::new(format!(
+                "Unable to get file_name on device {:?}",
+                dev_path.as_ref()
+            ))
+        })?;
+    if sys_path.exists() {
+        Ok(sys_path)
+    } else {
+        Err(BlockUtilsError::new(format!(
+            "Sys path {} doesn't exist. Maybe {} is not a block device",
+            sys_path.display(),
+            dev_path.as_ref().display()
+        )))
+    }
+}
+
 /// Get property value by key `tag` for device with devpath `device_path` (like "/dev/sda") if present
 #[cfg(target_os = "linux")]
 pub fn get_block_dev_property(
     device_path: impl AsRef<Path>,
     tag: &str,
 ) -> BlockResult<Option<String>> {
-    let syspath = device_path
-        .as_ref()
-        .file_name()
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            BlockUtilsError::new(format!(
-                "Unable to get file_name on device {:?}",
-                device_path.as_ref()
-            ))
-        })?;
+    let syspath = dev_path_to_sys_path(device_path)?;
 
     Ok(udev::Device::from_syspath(&syspath)?
         .property_value(tag)
@@ -1239,16 +1255,7 @@ pub fn get_block_dev_property(
 pub fn get_block_dev_properties(
     device_path: impl AsRef<Path>,
 ) -> BlockResult<HashMap<String, String>> {
-    let syspath = device_path
-        .as_ref()
-        .file_name()
-        .map(PathBuf::from)
-        .ok_or_else(|| {
-            BlockUtilsError::new(format!(
-                "Unable to get file_name on device {:?}",
-                device_path.as_ref()
-            ))
-        })?;
+    let syspath = dev_path_to_sys_path(device_path)?;
 
     let udev_device = udev::Device::from_syspath(&syspath)?;
     Ok(udev_device
