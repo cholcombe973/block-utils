@@ -356,6 +356,12 @@ pub enum FilesystemType {
     Lvm,
     Xfs,
     Zfs,
+    Ntfs,
+    /// All FAT-based filesystems, i.e. VFat, Fat16, Fat32, Fat64, ExFat.
+    Vfat,
+    /// Unknown filesystem with label (name).
+    Unrecognised(String),
+    /// Unknown filesystem without label (name) or absent filesystem.
     Unknown,
 }
 
@@ -372,7 +378,10 @@ impl FromStr for FilesystemType {
             "lvm2_member" => Ok(FilesystemType::Lvm),
             "xfs" => Ok(FilesystemType::Xfs),
             "zfs" => Ok(FilesystemType::Zfs),
-            _ => Ok(FilesystemType::Unknown),
+            "vfat" => Ok(FilesystemType::Vfat),
+            "ntfs" => Ok(FilesystemType::Ntfs),
+            "" => Ok(FilesystemType::Unknown),
+            name => Ok(FilesystemType::Unrecognised(name.to_string()))
         }
     }
 }
@@ -387,6 +396,9 @@ impl FilesystemType {
             FilesystemType::Lvm => "lvm",
             FilesystemType::Xfs => "xfs",
             FilesystemType::Zfs => "zfs",
+            FilesystemType::Vfat => "vfat",
+            FilesystemType::Ntfs => "ntfs",
+            FilesystemType::Unrecognised(ref name) => name.as_str(),
             FilesystemType::Unknown => "unknown",
         }
     }
@@ -402,6 +414,9 @@ impl fmt::Display for FilesystemType {
             FilesystemType::Lvm => "lvm".to_string(),
             FilesystemType::Xfs => "xfs".to_string(),
             FilesystemType::Zfs => "zfs".to_string(),
+            FilesystemType::Vfat => "vfat".to_string(),
+            FilesystemType::Ntfs => "ntfs".to_string(),
+            FilesystemType::Unrecognised(ref name) => name.clone(),
             FilesystemType::Unknown => "unknown".to_string(),
         };
         write!(f, "{}", string)
