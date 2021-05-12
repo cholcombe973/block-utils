@@ -10,7 +10,7 @@ use nom::character::{
     is_digit,
 };
 use std::collections::HashMap;
-use std::error::Error as err;
+use std::error::Error;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, read_dir, File};
@@ -19,6 +19,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
 use std::str::{from_utf8, FromStr};
+use strum_macros::{Display, EnumString, IntoStaticStr};
 use uuid::Uuid;
 
 pub type BlockResult<T> = Result<T, BlockUtilsError>;
@@ -74,36 +75,25 @@ mod tests {
 
 const MTAB_PATH: &str = "/etc/mtab";
 
-#[derive(Debug)]
+#[derive(Debug, Display)]
 pub enum BlockUtilsError {
     Error(String),
     IoError(::std::io::Error),
     ParseBoolError(::std::str::ParseBoolError),
     ParseIntError(::std::num::ParseIntError),
     SerdeError(serde_json::Error),
+    StrumParseError(strum::ParseError),
 }
 
-impl fmt::Display for BlockUtilsError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_str("BlockUtilsError : ")?;
-        match *self {
-            BlockUtilsError::Error(ref e) => f.write_str(e),
-            BlockUtilsError::IoError(ref e) => f.write_str(&e.to_string()),
-            BlockUtilsError::ParseBoolError(ref e) => f.write_str(&e.to_string()),
-            BlockUtilsError::ParseIntError(ref e) => f.write_str(&e.to_string()),
-            BlockUtilsError::SerdeError(ref e) => f.write_str(&e.to_string()),
-        }
-    }
-}
-
-impl err for BlockUtilsError {
-    fn source(&self) -> Option<&(dyn err + 'static)> {
+impl Error for BlockUtilsError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
         match *self {
             BlockUtilsError::Error(_) => None,
             BlockUtilsError::IoError(ref e) => e.source(),
             BlockUtilsError::ParseBoolError(ref e) => e.source(),
             BlockUtilsError::ParseIntError(ref e) => e.source(),
             BlockUtilsError::SerdeError(ref e) => e.source(),
+            BlockUtilsError::StrumParseError(ref e) => e.source(),
         }
     }
 }
@@ -139,9 +129,16 @@ impl From<::serde_json::Error> for BlockUtilsError {
     }
 }
 
+impl From<strum::ParseError> for BlockUtilsError {
+    fn from(err: ::strum::ParseError) -> BlockUtilsError {
+        BlockUtilsError::StrumParseError(err)
+    }
+}
+
 // Formats a block device at Path p with XFS
 /// This is used for formatting btrfs filesystems and setting the metadata profile
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Display)]
+#[strum(serialize_all = "snake_case")]
 pub enum MetadataProfile {
     Raid0,
     Raid1,
@@ -153,36 +150,24 @@ pub enum MetadataProfile {
 }
 
 /// What raid card if any the system is using to serve disks
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, EnumString)]
 pub enum Vendor {
+    #[strum(serialize = "ATA")]
     None,
+    #[strum(serialize = "CISCO")]
     Cisco,
+    #[strum(serialize = "HP", serialize = "hp", serialize = "HPE")]
     Hp,
+    #[strum(serialize = "LSI")]
     Lsi,
+    #[strum(serialize = "QEMU")]
     Qemu,
-    Vbox,     // Virtual Box
+    #[strum(serialize = "VBOX")]
+    Vbox, // Virtual Box
+    #[strum(serialize = "NECVMWar")]
     NECVMWar, // VMWare
-    VMware,   //VMware
-}
-
-impl FromStr for Vendor {
-    type Err = BlockUtilsError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "ATA" => Ok(Vendor::None),
-            "CISCO" => Ok(Vendor::Cisco),
-            "HP" => Ok(Vendor::Hp),
-            "hp" => Ok(Vendor::Hp),
-            "HPE" => Ok(Vendor::Hp),
-            "LSI" => Ok(Vendor::Lsi),
-            "QEMU" => Ok(Vendor::Qemu),
-            "VBOX" => Ok(Vendor::Vbox),
-            "NECVMWar" => Ok(Vendor::NECVMWar),
-            "VMware" => Ok(Vendor::VMware),
-            _ => Err(BlockUtilsError::new(format!("Unknown Vendor: {}", s))),
-        }
-    }
+    #[strum(serialize = "VMware")]
+    VMware, //VMware
 }
 
 // This will be used to make intelligent decisions about setting up the device
@@ -251,7 +236,8 @@ pub struct AsyncInit {
     pub device: PathBuf,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Display, EnumString)]
+#[strum(serialize_all = "snake_case")]
 pub enum Scheduler {
     /// Try to balance latency and throughput
     Cfq,
@@ -259,29 +245,6 @@ pub enum Scheduler {
     Deadline,
     /// Throughput is most important
     Noop,
-}
-
-impl fmt::Display for Scheduler {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let s = match *self {
-            Scheduler::Cfq => "cfq",
-            Scheduler::Deadline => "deadline",
-            Scheduler::Noop => "noop",
-        };
-        write!(f, "{}", s)
-    }
-}
-
-impl FromStr for Scheduler {
-    type Err = String;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "cfq" => Ok(Scheduler::Cfq),
-            "deadline" => Ok(Scheduler::Deadline),
-            "noop" => Ok(Scheduler::Noop),
-            _ => Err(format!("Unknown scheduler {}", s)),
-        }
-    }
 }
 
 /// What type of media has been detected.
@@ -304,8 +267,10 @@ pub enum MediaType {
     Virtual,
     Unknown,
 }
+
 /// What type of device has been detected.
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, Display, IntoStaticStr)]
+#[strum(serialize_all = "snake_case")]
 pub enum DeviceType {
     Disk,
     Partition,
@@ -322,27 +287,6 @@ impl FromStr for DeviceType {
             "partition" => Ok(DeviceType::Partition),
             _ => Ok(DeviceType::Unknown),
         }
-    }
-}
-
-impl DeviceType {
-    pub fn to_str(&self) -> &str {
-        match *self {
-            DeviceType::Disk => "disk",
-            DeviceType::Partition => "partition",
-            DeviceType::Unknown => "unknown",
-        }
-    }
-}
-
-impl fmt::Display for DeviceType {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let string = match *self {
-            DeviceType::Disk => "disk".to_string(),
-            DeviceType::Partition => "partition".to_string(),
-            DeviceType::Unknown => "unknown".to_string(),
-        };
-        write!(f, "{}", string)
     }
 }
 
@@ -365,6 +309,7 @@ pub enum FilesystemType {
     Unknown,
 }
 
+//todo this explicit impl can be avoided with strum but it requires changes in the error model
 impl FromStr for FilesystemType {
     type Err = BlockUtilsError;
 
@@ -381,7 +326,7 @@ impl FromStr for FilesystemType {
             "vfat" => Ok(FilesystemType::Vfat),
             "ntfs" => Ok(FilesystemType::Ntfs),
             "" => Ok(FilesystemType::Unknown),
-            name => Ok(FilesystemType::Unrecognised(name.to_string()))
+            name => Ok(FilesystemType::Unrecognised(name.to_string())),
         }
     }
 }
@@ -418,21 +363,6 @@ impl fmt::Display for FilesystemType {
             FilesystemType::Ntfs => "ntfs".to_string(),
             FilesystemType::Unrecognised(ref name) => name.clone(),
             FilesystemType::Unknown => "unknown".to_string(),
-        };
-        write!(f, "{}", string)
-    }
-}
-
-impl fmt::Display for MetadataProfile {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let string = match self {
-            MetadataProfile::Raid0 => "raid0".to_string(),
-            MetadataProfile::Raid1 => "raid1".to_string(),
-            MetadataProfile::Raid5 => "raid5".to_string(),
-            MetadataProfile::Raid6 => "raid6".to_string(),
-            MetadataProfile::Raid10 => "raid10".to_string(),
-            MetadataProfile::Single => "single".to_string(),
-            MetadataProfile::Dup => "dup".to_string(),
         };
         write!(f, "{}", string)
     }
@@ -1285,7 +1215,7 @@ pub fn get_block_dev_properties(
 }
 
 /// A raid array enclosure
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Enclosure {
     pub active: Option<String>,
     pub fault: Option<String>,
@@ -1295,53 +1225,15 @@ pub struct Enclosure {
     pub enclosure_type: Option<String>,
 }
 
-impl Default for Enclosure {
-    fn default() -> Enclosure {
-        Enclosure {
-            active: None,
-            fault: None,
-            power_status: None,
-            slot: 0,
-            status: None,
-            enclosure_type: None,
-        }
-    }
-}
-
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Display, EnumString)]
+#[strum(serialize_all = "snake_case")]
 pub enum DeviceState {
     Blocked,
+    #[strum(serialize = "failfast")]
     FailFast,
     Lost,
     Running,
     RunningRta,
-}
-
-impl fmt::Display for DeviceState {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        match self {
-            DeviceState::Blocked => write!(f, "blocked"),
-            DeviceState::FailFast => write!(f, "fail_fast"),
-            DeviceState::Lost => write!(f, "lost"),
-            DeviceState::Running => write!(f, "running"),
-            DeviceState::RunningRta => write!(f, "running_rta"),
-        }
-    }
-}
-
-impl FromStr for DeviceState {
-    type Err = BlockUtilsError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "blocked" => Ok(DeviceState::Blocked),
-            "failfast" => Ok(DeviceState::FailFast),
-            "lost" => Ok(DeviceState::Lost),
-            "running" => Ok(DeviceState::Running),
-            "running_rta" => Ok(DeviceState::RunningRta),
-            _ => Err(BlockUtilsError::new(format!("Unknown scsi state: {}", s))),
-        }
-    }
 }
 
 #[derive(Clone, Debug)]
@@ -1361,84 +1253,72 @@ pub struct ScsiInfo {
 }
 
 // Taken from https://github.com/hreinecke/lsscsi/blob/master/src/lsscsi.c
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, EnumString)]
 pub enum ScsiDeviceType {
+    #[strum(serialize = "0", serialize = "Direct-Access")]
     DirectAccess,
+    #[strum(serialize = "1")]
     SequentialAccess,
+    #[strum(serialize = "2")]
     Printer,
+    #[strum(serialize = "3")]
     Processor,
+    #[strum(serialize = "4")]
     WriteOnce,
+    #[strum(serialize = "5")]
     CdRom,
+    #[strum(serialize = "6")]
     Scanner,
+    #[strum(serialize = "7")]
     Opticalmemory,
+    #[strum(serialize = "8")]
     MediumChanger,
+    #[strum(serialize = "9")]
     Communications,
+    #[strum(serialize = "10")]
     Unknowna,
+    #[strum(serialize = "11")]
     Unknownb,
+    #[strum(serialize = "12", serialize = "RAID")]
     StorageArray,
+    #[strum(serialize = "13", serialize = "Enclosure")]
     Enclosure,
+    #[strum(serialize = "14")]
     SimplifiedDirectAccess,
+    #[strum(serialize = "15")]
     OpticalCardReadWriter,
+    #[strum(serialize = "16")]
     BridgeController,
+    #[strum(serialize = "17")]
     ObjectBasedStorage,
+    #[strum(serialize = "18")]
     AutomationDriveInterface,
+    #[strum(serialize = "19")]
     SecurityManager,
+    #[strum(serialize = "20")]
     ZonedBlock,
+    #[strum(serialize = "21")]
     Reserved15,
+    #[strum(serialize = "22")]
     Reserved16,
+    #[strum(serialize = "23")]
     Reserved17,
+    #[strum(serialize = "24")]
     Reserved18,
+    #[strum(serialize = "25")]
     Reserved19,
+    #[strum(serialize = "26")]
     Reserved1a,
+    #[strum(serialize = "27")]
     Reserved1b,
+    #[strum(serialize = "28")]
     Reserved1c,
+    #[strum(serialize = "29")]
     Reserved1e,
+    #[strum(serialize = "30")]
     WellKnownLu,
+    #[strum(serialize = "31")]
     NoDevice,
-}
-
-impl FromStr for ScsiDeviceType {
-    type Err = BlockUtilsError;
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        match s {
-            "0" => Ok(ScsiDeviceType::DirectAccess),
-            "1" => Ok(ScsiDeviceType::SequentialAccess),
-            "2" => Ok(ScsiDeviceType::Printer),
-            "3" => Ok(ScsiDeviceType::Processor),
-            "4" => Ok(ScsiDeviceType::WriteOnce),
-            "5" => Ok(ScsiDeviceType::CdRom),
-            "6" => Ok(ScsiDeviceType::Scanner),
-            "7" => Ok(ScsiDeviceType::Opticalmemory),
-            "8" => Ok(ScsiDeviceType::MediumChanger),
-            "9" => Ok(ScsiDeviceType::Communications),
-            "10" => Ok(ScsiDeviceType::Unknowna),
-            "11" => Ok(ScsiDeviceType::Unknownb),
-            "12" => Ok(ScsiDeviceType::StorageArray),
-            "13" => Ok(ScsiDeviceType::Enclosure),
-            "14" => Ok(ScsiDeviceType::SimplifiedDirectAccess),
-            "15" => Ok(ScsiDeviceType::OpticalCardReadWriter),
-            "16" => Ok(ScsiDeviceType::BridgeController),
-            "17" => Ok(ScsiDeviceType::ObjectBasedStorage),
-            "18" => Ok(ScsiDeviceType::AutomationDriveInterface),
-            "19" => Ok(ScsiDeviceType::SecurityManager),
-            "20" => Ok(ScsiDeviceType::ZonedBlock),
-            "21" => Ok(ScsiDeviceType::Reserved15),
-            "22" => Ok(ScsiDeviceType::Reserved16),
-            "23" => Ok(ScsiDeviceType::Reserved17),
-            "24" => Ok(ScsiDeviceType::Reserved18),
-            "25" => Ok(ScsiDeviceType::Reserved19),
-            "26" => Ok(ScsiDeviceType::Reserved1a),
-            "27" => Ok(ScsiDeviceType::Reserved1b),
-            "28" => Ok(ScsiDeviceType::Reserved1c),
-            "29" => Ok(ScsiDeviceType::Reserved1e),
-            "30" => Ok(ScsiDeviceType::WellKnownLu),
-            "31" => Ok(ScsiDeviceType::NoDevice),
-            "Direct-Access" => Ok(ScsiDeviceType::DirectAccess),
-            "Enclosure" => Ok(ScsiDeviceType::Enclosure),
-            "RAID" => Ok(ScsiDeviceType::StorageArray),
-            _ => Err(BlockUtilsError::new(format!("Unknown scheduler {}", s))),
-        }
-    }
 }
 
 impl Default for ScsiInfo {
