@@ -10,7 +10,6 @@ use nom::character::{
     is_digit,
 };
 use std::collections::HashMap;
-use std::error::Error;
 use std::ffi::OsStr;
 use std::fmt;
 use std::fs::{self, read_dir, File};
@@ -20,6 +19,7 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
 use std::str::{from_utf8, FromStr};
 use strum_macros::{Display, EnumString, IntoStaticStr};
+use thiserror::Error;
 use uuid::Uuid;
 
 pub type BlockResult<T> = Result<T, BlockUtilsError>;
@@ -75,63 +75,31 @@ mod tests {
 
 const MTAB_PATH: &str = "/etc/mtab";
 
-#[derive(Debug, Display)]
+#[derive(Debug, Error)]
 pub enum BlockUtilsError {
+    #[error("BlockUtilsError : {0}")]
     Error(String),
-    IoError(::std::io::Error),
-    ParseBoolError(::std::str::ParseBoolError),
-    ParseIntError(::std::num::ParseIntError),
-    SerdeError(serde_json::Error),
-    StrumParseError(strum::ParseError),
-}
 
-impl Error for BlockUtilsError {
-    fn source(&self) -> Option<&(dyn Error + 'static)> {
-        match *self {
-            BlockUtilsError::Error(_) => None,
-            BlockUtilsError::IoError(ref e) => e.source(),
-            BlockUtilsError::ParseBoolError(ref e) => e.source(),
-            BlockUtilsError::ParseIntError(ref e) => e.source(),
-            BlockUtilsError::SerdeError(ref e) => e.source(),
-            BlockUtilsError::StrumParseError(ref e) => e.source(),
-        }
-    }
+    #[error(transparent)]
+    IoError(#[from] std::io::Error),
+
+    #[error(transparent)]
+    ParseBoolError(#[from] std::str::ParseBoolError),
+
+    #[error(transparent)]
+    ParseIntError(#[from] std::num::ParseIntError),
+
+    #[error(transparent)]
+    SerdeError(#[from] serde_json::Error),
+
+    #[error(transparent)]
+    StrumParseError(#[from] strum::ParseError),
 }
 
 impl BlockUtilsError {
-    /// Create a new GlusterError with a String message
+    /// Create a new BlockUtilsError with a String message
     fn new(err: String) -> BlockUtilsError {
         BlockUtilsError::Error(err)
-    }
-}
-
-impl From<::std::io::Error> for BlockUtilsError {
-    fn from(err: ::std::io::Error) -> BlockUtilsError {
-        BlockUtilsError::IoError(err)
-    }
-}
-
-impl From<::std::str::ParseBoolError> for BlockUtilsError {
-    fn from(err: ::std::str::ParseBoolError) -> BlockUtilsError {
-        BlockUtilsError::ParseBoolError(err)
-    }
-}
-
-impl From<::std::num::ParseIntError> for BlockUtilsError {
-    fn from(err: ::std::num::ParseIntError) -> BlockUtilsError {
-        BlockUtilsError::ParseIntError(err)
-    }
-}
-
-impl From<::serde_json::Error> for BlockUtilsError {
-    fn from(err: ::serde_json::Error) -> BlockUtilsError {
-        BlockUtilsError::SerdeError(err)
-    }
-}
-
-impl From<strum::ParseError> for BlockUtilsError {
-    fn from(err: ::strum::ParseError) -> BlockUtilsError {
-        BlockUtilsError::StrumParseError(err)
     }
 }
 
@@ -291,12 +259,14 @@ impl FromStr for DeviceType {
 }
 
 /// What type of filesystem
-#[derive(Clone, Debug, Eq, PartialEq)]
+#[derive(Clone, Debug, Eq, PartialEq, EnumString)]
+#[strum(serialize_all = "snake_case")]
 pub enum FilesystemType {
     Btrfs,
     Ext2,
     Ext3,
     Ext4,
+    #[strum(serialize = "lvm2_member")]
     Lvm,
     Xfs,
     Zfs,
@@ -304,31 +274,11 @@ pub enum FilesystemType {
     /// All FAT-based filesystems, i.e. VFat, Fat16, Fat32, Fat64, ExFat.
     Vfat,
     /// Unknown filesystem with label (name).
+    #[strum(default)]
     Unrecognised(String),
     /// Unknown filesystem without label (name) or absent filesystem.
+    #[strum(serialize = "")]
     Unknown,
-}
-
-//todo this explicit impl can be avoided with strum but it requires changes in the error model
-impl FromStr for FilesystemType {
-    type Err = BlockUtilsError;
-
-    fn from_str(s: &str) -> Result<Self, Self::Err> {
-        let s = s.to_lowercase();
-        match s.as_ref() {
-            "btrfs" => Ok(FilesystemType::Btrfs),
-            "ext2" => Ok(FilesystemType::Ext2),
-            "ext3" => Ok(FilesystemType::Ext3),
-            "ext4" => Ok(FilesystemType::Ext4),
-            "lvm2_member" => Ok(FilesystemType::Lvm),
-            "xfs" => Ok(FilesystemType::Xfs),
-            "zfs" => Ok(FilesystemType::Zfs),
-            "vfat" => Ok(FilesystemType::Vfat),
-            "ntfs" => Ok(FilesystemType::Ntfs),
-            "" => Ok(FilesystemType::Unknown),
-            name => Ok(FilesystemType::Unrecognised(name.to_string())),
-        }
-    }
 }
 
 impl FilesystemType {
@@ -958,7 +908,7 @@ fn get_fs_type(device: &udev::Device) -> BlockResult<FilesystemType> {
     match device.property_value("ID_FS_TYPE") {
         Some(s) => {
             let value = s.to_string_lossy();
-            FilesystemType::from_str(&value)
+            Ok(FilesystemType::from_str(&value)?)
         }
         None => Ok(FilesystemType::Unknown),
     }
