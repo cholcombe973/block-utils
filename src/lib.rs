@@ -152,6 +152,7 @@ pub struct Device {
 }
 
 impl Device {
+    #[cfg(target_os = "linux")]
     fn from_udev_device(device: udev::Device) -> BlockResult<Self> {
         let sys_name = device.sysname();
         let id: Option<Uuid> = get_uuid(&device);
@@ -1598,6 +1599,7 @@ pub fn is_disk(dev_path: impl AsRef<Path>) -> BlockResult<bool> {
     Ok(false)
 }
 
+#[cfg(target_os = "linux")]
 fn get_parent_name(device: &udev::Device) -> Option<PathBuf> {
     if let Some(parent_dev) = device.parent() {
         if let Some(dev_type) = parent_dev.devtype() {
