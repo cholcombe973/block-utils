@@ -1309,7 +1309,7 @@ fn test_scsi_parser() {
 // Trim all leading and trailing whitespaces, '\t', '\r\' and '\n' characters
 macro_rules! trim (
     ($i:expr, $submac:ident!( $($args:tt)* )) => (
-        delimited!($i, multispace0, $submac!($($args)*), multispace0);
+        delimited!($i, multispace0, $submac!($($args)*), multispace0)
     );
     ($i:expr, $f:expr) => (
         trim!($i, call!($f));

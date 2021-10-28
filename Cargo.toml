@@ -19,7 +19,7 @@ tempdir = "^0.3"
 [dependencies]
 fstab = "^0.4"
 log = "^0.4"
-nom = "^7.0"
+nom = "^5.1.1"
 regex = "^1.5"
 shellscript = "^0.3"
 serde_json = "^1.0"
@@ -29,4 +29,4 @@ strum_macros = "^0.22"
 thiserror = "^1.0"
 
 [target.'cfg(target_os = "linux")'.dependencies]
-udev = "^0.6"
+udev = "^0.5"
