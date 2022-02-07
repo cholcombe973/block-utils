@@ -18,7 +18,7 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
 use std::str::{from_utf8, FromStr};
-use strum_macros::{Display, EnumString, IntoStaticStr};
+use strum::{Display, EnumString, IntoStaticStr};
 use thiserror::Error;
 use uuid::Uuid;
 
