@@ -431,9 +431,9 @@ pub fn get_mount_device(mount_dir: impl AsRef<Path>) -> BlockResult<Option<PathB
     let reader = BufReader::new(f);
 
     for line in reader.lines() {
-        let l = line?;
-        if l.contains(&dir) {
-            let parts: Vec<&str> = l.split_whitespace().collect();
+        let line = line?;
+        let parts: Vec<&str> = line.split_whitespace().collect();
+        if parts.contains(&dir.as_str()) {
             if !parts.is_empty() {
                 return Ok(Some(PathBuf::from(parts[0])));
             }
