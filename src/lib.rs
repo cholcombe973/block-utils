@@ -404,7 +404,7 @@ pub fn mount_device(device: &Device, mount_point: impl AsRef<Path>) -> BlockResu
     match device.id {
         Some(id) => {
             arg_list.push("-U".to_string());
-            arg_list.push(id.to_hyphenated().to_string());
+            arg_list.push(id.as_hyphenated().to_string());
         }
         None => {
             arg_list.push(format!("/dev/{}", device.name));
