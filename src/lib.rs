@@ -27,14 +27,14 @@ pub type BlockResult<T> = Result<T, BlockUtilsError>;
 #[cfg(test)]
 mod tests {
     use nix::unistd::{close, ftruncate};
-    use tempdir::TempDir;
+    use tempfile::TempDir;
 
     use std::fs::File;
     use std::os::unix::io::IntoRawFd;
 
     #[test]
     fn test_create_xfs() {
-        let tmp_dir = TempDir::new("block_utils").unwrap();
+        let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join("xfs_device");
         let f = File::create(&file_path).expect("Failed to create file");
         let fd = f.into_raw_fd();
@@ -55,7 +55,7 @@ mod tests {
 
     #[test]
     fn test_create_ext4() {
-        let tmp_dir = TempDir::new("block_utils").unwrap();
+        let tmp_dir = TempDir::new().unwrap();
         let file_path = tmp_dir.path().join("ext4_device");
         let f = File::create(&file_path).expect("Failed to create file");
         let fd = f.into_raw_fd();

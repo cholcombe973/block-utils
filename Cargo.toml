@@ -14,7 +14,7 @@ license = "MIT"
 
 [dev-dependencies]
 nix = "0.23"
-tempdir = "0.3"
+tempfile = "3"
 
 [dependencies]
 fstab = "0.4"
