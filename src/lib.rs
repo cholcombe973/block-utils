@@ -1,14 +1,9 @@
-#[macro_use]
-extern crate nom;
-
 pub mod nvme;
 
 use fstab::{FsEntry, FsTab};
 use log::{debug, warn};
-use nom::character::{
-    complete::{alpha1, multispace0},
-    is_digit,
-};
+use uuid::Uuid;
+
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt;
@@ -17,10 +12,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output};
-use std::str::{from_utf8, FromStr};
+use std::str::FromStr;
 use strum::{Display, EnumString, IntoStaticStr};
 use thiserror::Error;
-use uuid::Uuid;
 
 pub type BlockResult<T> = Result<T, BlockUtilsError>;
 
@@ -404,7 +398,7 @@ pub fn mount_device(device: &Device, mount_point: impl AsRef<Path>) -> BlockResu
     match device.id {
         Some(id) => {
             arg_list.push("-U".to_string());
-            arg_list.push(id.as_hyphenated().to_string());
+            arg_list.push(id.hyphenated().to_string());
         }
         None => {
             arg_list.push(format!("/dev/{}", device.name));
@@ -1191,7 +1185,7 @@ pub enum DeviceState {
 pub struct ScsiInfo {
     pub block_device: Option<PathBuf>,
     pub enclosure: Option<Enclosure>,
-    pub host: u8,
+    pub host: String,
     pub channel: u8,
     pub id: u8,
     pub lun: u8,
@@ -1277,7 +1271,7 @@ impl Default for ScsiInfo {
         ScsiInfo {
             block_device: None,
             enclosure: None,
-            host: 0,
+            host: String::new(),
             channel: 0,
             id: 0,
             lun: 0,
@@ -1300,133 +1294,81 @@ impl PartialEq for ScsiInfo {
     }
 }
 
+fn scsi_host_info(input: &str) -> Result<Vec<ScsiInfo>, BlockUtilsError> {
+    let mut scsi_devices = Vec::new();
+    // Simple brute force parser
+    let mut scsi_info = ScsiInfo::default();
+    for line in input.lines() {
+        if line.starts_with("Attached devices") {
+            continue;
+        }
+        if line.starts_with("Host") {
+            scsi_devices.push(scsi_info);
+            scsi_info = ScsiInfo::default();
+            let parts = line.split_whitespace().collect::<Vec<&str>>();
+            if parts.len() < 8 {
+                // Invalid line
+                continue;
+            }
+            // Any part that contains ':' is a key/value pair
+            scsi_info.host = parts[1].to_string();
+            scsi_info.channel = parts[3].parse::<u8>()?;
+            scsi_info.id = parts[5].parse::<u8>()?;
+            scsi_info.lun = parts[7].parse::<u8>()?;
+        }
+        if line.contains("Vendor") {
+            let parts = line.split_whitespace().collect::<Vec<&str>>();
+            scsi_info.vendor = parts[1].parse::<Vendor>()?;
+            // Take until : is found
+            let model = parts[3..]
+                .iter()
+                .take_while(|s| !s.contains(":"))
+                .map(|s| *s)
+                .collect::<Vec<&str>>();
+            if !model.is_empty() {
+                scsi_info.model = Some(model.join(" ").to_string());
+            }
+            // Find where Rev: is and take the next part
+            let rev_position = parts.iter().position(|s| s.contains("Rev:"));
+            if let Some(rev_position) = rev_position {
+                scsi_info.rev = Some(parts[rev_position + 1].to_string());
+            }
+        }
+        if line.contains("Type") {
+            let parts = line.split_whitespace().collect::<Vec<&str>>();
+            scsi_info.scsi_type = parts[1].parse::<ScsiDeviceType>()?;
+            scsi_info.scsi_revision = parts[5].parse::<u32>()?;
+        }
+    }
+
+    Ok(scsi_devices)
+}
+
 #[test]
 fn test_scsi_parser() {
     let s = fs::read_to_string("tests/proc_scsi").unwrap();
-    println!("scsi_host_info {:#?}", scsi_host_info(s.as_bytes()));
+    println!("scsi_host_info {:#?}", scsi_host_info(&s));
 }
-
-// Trim all leading and trailing whitespaces, '\t', '\r\' and '\n' characters
-macro_rules! trim (
-    ($i:expr, $submac:ident!( $($args:tt)* )) => (
-        delimited!($i, multispace0, $submac!($($args)*), multispace0)
-    );
-    ($i:expr, $f:expr) => (
-        trim!($i, call!($f));
-    );
-);
-
-named!(
-    host<u8>,
-    trim!(preceded!(trim!(tag!("Host: scsi")), take_u8))
-);
-
-named!(
-    model<&str>,
-    trim!(map_res!(
-        delimited!(trim!(tag!("Model:")), alpha1, tag!("  ")),
-        from_utf8
-    ))
-);
-
-named!(
-    rev<&str>,
-    trim!(map_res!(
-        delimited!(trim!(tag!("Rev:")), alpha1, tag!(" ")),
-        from_utf8
-    ))
-);
-
-named!(
-    vendor<&str>,
-    trim!(map_res!(
-        delimited!(trim!(tag!("Vendor:")), alpha1, tag!(" ")),
-        from_utf8
-    ))
-);
-
-named!(
-    scsi_type<&str>,
-    trim!(map_res!(
-        delimited!(trim!(tag!("Type:")), alpha1, tag!(" ")),
-        from_utf8
-    ))
-);
-
-named!(
-    take_u8<u8>,
-    map_res!(map_res!(take_while!(is_digit), from_utf8), u8::from_str)
-);
-
-named!(
-    take_u32<u32>,
-    map_res!(map_res!(take_while!(is_digit), from_utf8), u32::from_str)
-);
-
-named!(
-    channel<u8>,
-    trim!(preceded!(trim!(tag!("Channel:")), take_u8))
-);
-
-named!(scsi_id<u8>, trim!(preceded!(trim!(tag!("Id:")), take_u8)));
-
-named!(scsi_lun<u8>, trim!(preceded!(trim!(tag!("Lun:")), take_u8)));
-
-named!(
-    revision<u32>,
-    trim!(preceded!(trim!(tag!("ANSI  SCSI revision:")), take_u32))
-);
-
-named!(scsi_host_info<&[u8],Vec<ScsiInfo>>,
-  many1!(do_parse!(    // the parser takes a byte array as input, and returns a Vec<ScsiInfo>
-    opt!(tag!("Attached devices:")) >>
-    host: host >>
-    channel: channel >>
-    id: scsi_id >>
-    lun: scsi_lun >>
-    vendor: vendor >>
-    scsi_model: model >>
-    scsi_rev: rev >>
-    scsi_type: scsi_type >>
-    revision: revision >>
-
-    // the final tuple will be able to use the variables defined previously
-    (ScsiInfo{
-        block_device: None,
-        enclosure: None,
-        host,
-        channel,
-        id,
-        lun,
-        vendor: Vendor::from_str(vendor).unwrap(),
-        model: Some(scsi_model.to_string()),
-        rev: Some(scsi_rev.trim().to_string()),
-        state: None,
-        scsi_type: ScsiDeviceType::from_str(&scsi_type.to_string()).unwrap(),
-        scsi_revision: revision,
-    })
- ))
-);
 
 #[test]
 fn test_sort_raid_info() {
     let mut scsi_0 = ScsiInfo::default();
-    scsi_0.host = 0;
+    scsi_0.host = "scsi6".to_string();
     scsi_0.channel = 0;
     scsi_0.id = 0;
     scsi_0.lun = 0;
     let mut scsi_1 = ScsiInfo::default();
-    scsi_1.host = 2;
+    scsi_1.host = "scsi2".to_string();
     scsi_1.channel = 0;
     scsi_1.id = 0;
     scsi_1.lun = 0;
     let mut scsi_2 = ScsiInfo::default();
-    scsi_2.host = 2;
+    scsi_2.host = "scsi2".to_string();
     scsi_2.channel = 1;
     scsi_2.id = 0;
     scsi_2.lun = 0;
     let mut scsi_3 = ScsiInfo::default();
-    scsi_3.host = 2;
+    scsi_3.host = "scsi2".to_string();
     scsi_3.channel = 1;
     scsi_3.id = 0;
     scsi_3.lun = 1;
@@ -1519,7 +1461,7 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
                         warn!("Invalid device name: {}. Should be 0:0:0:0 format", n);
                         continue;
                     }
-                    s.host = u8::from_str(parts[0])?;
+                    s.host = parts[0].to_string();
                     s.channel = u8::from_str(parts[1])?;
                     s.id = u8::from_str(parts[2])?;
                     s.lun = u8::from_str(parts[3])?;
@@ -1570,16 +1512,7 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
         // Fallback behavior still works but gathers much less information
         let buff = fs::read_to_string("/proc/scsi/scsi")?;
 
-        match scsi_host_info(buff.as_bytes()) {
-            Ok((_, value)) => Ok(value),
-            Err(nom::Err::Incomplete(needed)) => Err(BlockUtilsError::new(format!(
-                "Unable to parse /proc/scsi/scsi output: {}.  Needed {:?} more bytes",
-                buff, needed
-            ))),
-            Err(nom::Err::Error(_)) | Err(nom::Err::Failure(_)) => Err(BlockUtilsError::new(
-                format!("Unable to parse /proc/scsi/scsi output: {}", buff),
-            )),
-        }
+        Ok(scsi_host_info(&buff)?)
     }
 }
 
