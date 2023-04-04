@@ -1,6 +1,29 @@
 use crate::{BlockResult, BlockUtilsError};
+use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "PascalCase")]
+pub struct NvmeDevice {
+    pub name_space: u64,
+    pub device_path: String,
+    pub index: u64,
+    pub model_number: String,
+    pub product_name: String,
+    pub serial_number: String,
+    pub used_bytes: u64,
+    #[serde(rename = "MaximumLBA")]
+    pub maximum_lba: u64,
+    pub physical_size: u64,
+    pub sector_size: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "PascalCase")]
+struct NvmeDeviceContainer {
+    devices: Vec<NvmeDevice>,
+}
 
 /// Retrieve the error logs from the nvme device
 pub fn get_error_log(dev: &Path) -> BlockResult<String> {
@@ -88,14 +111,16 @@ pub fn list_nvme_controllers() -> BlockResult<Vec<String>> {
 }
 
 /// List the nvme devices on the host
-pub fn list_nvme_devices() -> BlockResult<Vec<String>> {
-    let out = Command::new("nvme-list").args(&["-o", "json"]).output()?;
+pub fn list_nvme_devices() -> BlockResult<Vec<NvmeDevice>> {
+    let out = Command::new("nvme")
+        .args(&["list", "-o", "json"])
+        .output()?;
     if !out.status.success() {
         return Err(BlockUtilsError::new(
             String::from_utf8_lossy(&out.stderr).into_owned(),
         ));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let deserialized: Vec<String> = serde_json::from_str(&stdout)?;
-    Ok(deserialized)
+    let deserialized: NvmeDeviceContainer = serde_json::from_str(&stdout)?;
+    Ok(deserialized.devices)
 }
