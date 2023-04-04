@@ -1190,6 +1190,7 @@ pub struct ScsiInfo {
     pub id: u8,
     pub lun: u8,
     pub vendor: Vendor,
+    pub vendor_str: Option<String>,
     pub model: Option<String>,
     pub rev: Option<String>,
     pub state: Option<DeviceState>,
@@ -1276,6 +1277,7 @@ impl Default for ScsiInfo {
             id: 0,
             lun: 0,
             vendor: Vendor::None,
+            vendor_str: Option::None,
             model: None,
             rev: None,
             state: None,
@@ -1499,8 +1501,9 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
                                 fs::read_to_string(&scsi_entry.path())?.trim(),
                             )?;
                         } else if scsi_entry.file_name() == OsStr::new("vendor") {
-                            s.vendor =
-                                Vendor::from_str(fs::read_to_string(&scsi_entry.path())?.trim())?;
+                            let vendor_str = fs::read_to_string(&scsi_entry.path())?;
+                            s.vendor_str = Some(vendor_str.trim().to_string());
+                            s.vendor = Vendor::from_str(vendor_str.trim()).unwrap_or(Vendor::None);
                         }
                     }
                     scsi_devices.push(s);
