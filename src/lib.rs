@@ -143,6 +143,8 @@ pub struct Device {
     pub capacity: u64,
     pub fs_type: FilesystemType,
     pub serial_number: Option<String>,
+    pub logical_block_size: Option<u64>,
+    pub physical_block_size: Option<u64>,
 }
 
 impl Device {
@@ -157,6 +159,8 @@ impl Device {
             Some(size) => size,
             None => 0,
         };
+        let logical_block_size = get_udev_int_val(&device, "queue/logical_block_size");
+        let physical_block_size = get_udev_int_val(&device, "queue/physical_block_size");
         let fs_type = get_fs_type(&device)?;
 
         Ok(Device {
@@ -167,6 +171,8 @@ impl Device {
             capacity,
             fs_type,
             serial_number: serial,
+            logical_block_size,
+            physical_block_size,
         })
     }
 
@@ -183,6 +189,8 @@ impl Device {
             capacity: 0,
             fs_type: FilesystemType::from_str(&fs_entry.vfs_type)?,
             serial_number: None,
+            logical_block_size: None,
+            physical_block_size: None,
         })
     }
 }
@@ -871,15 +879,20 @@ fn test_get_device_info() {
 }
 
 #[cfg(target_os = "linux")]
-fn get_size(device: &udev::Device) -> Option<u64> {
-    match device.attribute_value("size") {
-        // 512 is the block size
-        Some(size_str) => {
-            let size = size_str.to_str().unwrap_or("0").parse::<u64>().unwrap_or(0);
-            Some(size * 512)
+fn get_udev_int_val(device: &udev::Device, attr_name: &str) -> Option<u64> {
+    match device.attribute_value(attr_name) {
+        Some(val_str) => {
+            let val = val_str.to_str().unwrap_or("0").parse::<u64>().unwrap_or(0);
+            Some(val)
         }
         None => None,
     }
+}
+
+#[cfg(target_os = "linux")]
+fn get_size(device: &udev::Device) -> Option<u64> {
+    // 512 is the block size
+    get_udev_int_val(device, "size").map(|s| s * 512)
 }
 
 #[cfg(target_os = "linux")]
