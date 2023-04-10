@@ -8,9 +8,10 @@ use std::process::Command;
 pub struct NvmeDevice {
     pub name_space: u64,
     pub device_path: String,
-    pub index: u64,
+    pub index: Option<u64>,
     pub model_number: String,
-    pub product_name: String,
+    pub product_name: Option<String>,
+    pub firmware: Option<String>,
     pub serial_number: String,
     pub used_bytes: u64,
     #[serde(rename = "MaximumLBA")]
