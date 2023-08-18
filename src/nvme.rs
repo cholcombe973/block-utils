@@ -27,7 +27,7 @@ struct NvmeDeviceContainer {
 }
 
 /// Retrieve the error logs from the nvme device
-pub fn get_error_log(dev: &Path) -> BlockResult<String> {
+pub fn get_error_log(dev: &Path) -> BlockResult<serde_json::Value> {
     let out = Command::new("nvme")
         .args(&["error-log", &dev.to_string_lossy(), "-o", "json"])
         .output()?;
@@ -37,12 +37,12 @@ pub fn get_error_log(dev: &Path) -> BlockResult<String> {
         ));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let deserialized: String = serde_json::from_str(&stdout)?;
+    let deserialized: serde_json::Value = serde_json::from_str(&stdout)?;
     Ok(deserialized)
 }
 
 /// Retrieve the firmware logs from the nvme device
-pub fn get_firmware_log(dev: &Path) -> BlockResult<String> {
+pub fn get_firmware_log(dev: &Path) -> BlockResult<serde_json::Value> {
     let out = Command::new("nvme")
         .args(&["fw-log", &dev.to_string_lossy(), "-o", "json"])
         .output()?;
@@ -52,12 +52,12 @@ pub fn get_firmware_log(dev: &Path) -> BlockResult<String> {
         ));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let deserialized: String = serde_json::from_str(&stdout)?;
+    let deserialized: serde_json::Value = serde_json::from_str(&stdout)?;
     Ok(deserialized)
 }
 
 /// Retrieve the smart logs from the nvme device
-pub fn get_smart_log(dev: &Path) -> BlockResult<String> {
+pub fn get_smart_log(dev: &Path) -> BlockResult<serde_json::Value> {
     let out = Command::new("nvme")
         .args(&["smart-log", &dev.to_string_lossy(), "-o", "json"])
         .output()?;
@@ -67,7 +67,7 @@ pub fn get_smart_log(dev: &Path) -> BlockResult<String> {
         ));
     }
     let stdout = String::from_utf8_lossy(&out.stdout);
-    let deserialized: String = serde_json::from_str(&stdout)?;
+    let deserialized: serde_json::Value = serde_json::from_str(&stdout)?;
     Ok(deserialized)
 }
 
