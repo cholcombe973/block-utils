@@ -71,6 +71,28 @@ pub fn get_smart_log(dev: &Path) -> BlockResult<serde_json::Value> {
     Ok(deserialized)
 }
 
+/// Retrieve a log page from the nvme device
+pub fn get_log(dev: &Path, id: u8, len: u16) -> BlockResult<Vec<u8>> {
+    let out = Command::new("nvme")
+        .args(&[
+            "get-log",
+            &dev.to_string_lossy(),
+            "-i",
+            id.to_string().as_str(),
+            "-l",
+            len.to_string().as_str(),
+            "-b",
+        ])
+        .output()?;
+    if !out.status.success() {
+        return Err(BlockUtilsError::new(
+            String::from_utf8_lossy(&out.stderr).into_owned(),
+        ));
+    }
+    let stdout: Vec<u8> = out.stdout;
+    Ok(stdout)
+}
+
 // Format an nvme block device
 pub fn format(dev: &Path) -> BlockResult<()> {
     let out = Command::new("nvme")
