@@ -1,5 +1,6 @@
 pub mod nvme;
 
+use std::borrow::Cow;
 use fstab::{FsEntry, FsTab};
 use log::{debug, warn};
 use uuid::Uuid;
@@ -7,6 +8,7 @@ use uuid::Uuid;
 use std::collections::HashMap;
 use std::ffi::OsStr;
 use std::fmt;
+use std::fmt::{Display, Formatter};
 use std::fs::{self, read_dir, File};
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::fs::MetadataExt;
@@ -111,13 +113,15 @@ pub enum MetadataProfile {
     Dup,
 }
 
-/// What raid card if any the system is using to serve disks
-#[derive(Clone, Debug, EnumString)]
+/// Value from ID_VENDOR.
+#[derive(Clone, Debug, EnumString, Eq, PartialEq)]
 pub enum Vendor {
     #[strum(serialize = "ATA")]
-    None,
+    ATA,
     #[strum(serialize = "CISCO")]
     Cisco,
+    #[strum(serialize = "DELL")]
+    Dell,
     #[strum(serialize = "HP", serialize = "hp", serialize = "HPE")]
     Hp,
     #[strum(serialize = "LSI")]
@@ -125,11 +129,40 @@ pub enum Vendor {
     #[strum(serialize = "QEMU")]
     Qemu,
     #[strum(serialize = "VBOX")]
-    Vbox, // Virtual Box
+    VirtualBox,
     #[strum(serialize = "NECVMWar")]
     NECVMWar, // VMWare
     #[strum(serialize = "VMware")]
     VMware, //VMware
+    #[strum(default)]
+    Other(String),
+}
+
+impl Display for Vendor {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        match self {
+            Vendor::Other(value) => write!(f, "{value}"),
+            // Rely on the debug string of a simple enum variant being its rust name.
+            other =>  write!(f, "{other:?}")
+        }
+    }
+}
+
+#[cfg(test)]
+mod test_vendor {
+    mod displays {
+        use crate::Vendor;
+
+        #[test]
+        fn known() {
+            assert_eq!("Lsi", format!("{}", Vendor::Lsi));
+        }
+
+        #[test]
+        fn unknown() {
+            assert_eq!("Foo", format!("{}", Vendor::Other("Foo".into())));
+        }
+    }
 }
 
 // This will be used to make intelligent decisions about setting up the device
@@ -218,25 +251,80 @@ pub enum Scheduler {
     Noop,
 }
 
-/// What type of media has been detected.
+/// What type of media has been detected, using matching rules unique to this crate.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum MediaType {
+    // CD or DVD drive, physical or virtual
+    Optical {
+        /// True if ID_CDROM_CD is 1
+        cd: bool,
+
+        /// True if ID_CDROM_DVD is 1
+        dvd: bool,
+
+        /// True if ID_CDROM_MRW is 1
+        mrw: bool,
+
+        /// True if ID_CDROM_MRW_W is 1
+        mrw_w: bool
+    },
     /// AKA SSD
     SolidState,
     /// Regular rotational device
     Rotational,
     /// Special loopback device
     Loopback,
-    // Logical volume device
+    /// Logical volume device
     LVM,
-    // Software raid device
+    /// Software raid device
     MdRaid,
-    // NVM Express
+    /// NVM Express
     NVME,
-    // Ramdisk
+    /// Partition
+    Partition,
+    /// Partition table
+    Partitions,
+    /// Ramdisk
     Ram,
-    Virtual,
+    /// Virtual disk inside a QEMU virtual machine
+    Qemu,
+    /// Virtual disk inside a VirtualBox virtual machine
+    VirtualBox,
+    /// Unidentified. While attributes were available in the identification process, none of the rules matched
+    Unrecognised {
+        vendor: Option<Vendor>,
+    },
+    /// Unidentified, because there were no attributes available for an identification process
     Unknown,
+}
+
+impl Display for MediaType {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        let text: Cow<str> = match self {
+            MediaType::Optical { .. } => "optical".into(),
+            MediaType::SolidState => "ssd".into(),
+            MediaType::Rotational => "hdd".into(),
+            MediaType::Loopback => "loopback".into(),
+            MediaType::LVM => "lvm".into(),
+            MediaType::MdRaid => "md-raid".into(),
+            MediaType::NVME => "nvme".into(),
+            MediaType::Partition => "partition".into(),
+            // An alternate display value would be "partition table" but that's longer than the rest
+            MediaType::Partitions => "partitions".into(),
+            MediaType::Ram => "ram".into(),
+            MediaType::Qemu => "QEMU".into(),
+            MediaType::VirtualBox => "Virtual Box".into(),
+            MediaType::Unrecognised { vendor} => {
+                match vendor {
+                    None => "unrecognized".into(),
+                    Some(v) => format!("unrecognized {v}").into()
+                }
+            },
+            MediaType::Unknown => "unknown".into(),
+        };
+
+        write!(f, "{text}")
+    }
 }
 
 /// What type of device has been detected.
@@ -245,6 +333,8 @@ pub enum MediaType {
 pub enum DeviceType {
     Disk,
     Partition,
+    #[strum(default)]
+    Unrecognised(String),
     Unknown,
 }
 
@@ -256,7 +346,7 @@ impl FromStr for DeviceType {
         match s.as_ref() {
             "disk" => Ok(DeviceType::Disk),
             "partition" => Ok(DeviceType::Partition),
-            _ => Ok(DeviceType::Unknown),
+            other => Ok(DeviceType::Unrecognised(other.into())),
         }
     }
 }
@@ -270,7 +360,10 @@ pub enum FilesystemType {
     Ext3,
     Ext4,
     #[strum(serialize = "lvm2_member")]
+    #[strum(serialize = "LVM2_member")]
     Lvm,
+    #[strum(serialize = "crypto_LUKS")]
+    Luks,
     Xfs,
     Zfs,
     Ntfs,
@@ -286,12 +379,13 @@ pub enum FilesystemType {
 
 impl FilesystemType {
     pub fn to_str(&self) -> &str {
-        match *self {
+        match self {
             FilesystemType::Btrfs => "btrfs",
             FilesystemType::Ext2 => "ext2",
             FilesystemType::Ext3 => "ext3",
             FilesystemType::Ext4 => "ext4",
             FilesystemType::Lvm => "lvm",
+            FilesystemType::Luks => "luks",
             FilesystemType::Xfs => "xfs",
             FilesystemType::Zfs => "zfs",
             FilesystemType::Vfat => "vfat",
@@ -304,20 +398,7 @@ impl FilesystemType {
 
 impl fmt::Display for FilesystemType {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        let string = match *self {
-            FilesystemType::Btrfs => "btrfs".to_string(),
-            FilesystemType::Ext2 => "ext2".to_string(),
-            FilesystemType::Ext3 => "ext3".to_string(),
-            FilesystemType::Ext4 => "ext4".to_string(),
-            FilesystemType::Lvm => "lvm".to_string(),
-            FilesystemType::Xfs => "xfs".to_string(),
-            FilesystemType::Zfs => "zfs".to_string(),
-            FilesystemType::Vfat => "vfat".to_string(),
-            FilesystemType::Ntfs => "ntfs".to_string(),
-            FilesystemType::Unrecognised(ref name) => name.clone(),
-            FilesystemType::Unknown => "unknown".to_string(),
-        };
-        write!(f, "{}", string)
+        write!(f, "{}", self.to_str())
     }
 }
 
@@ -958,8 +1039,8 @@ fn get_media_type(device: &udev::Device) -> MediaType {
         return MediaType::LVM;
     }
 
-    // That should take care of the tricky ones.  Lets try to identify if it's
-    // SSD or rotational now
+    // Lets try to identify if it's SSD or rotational now. Not all devices where this value
+    // could be applicable will report it.
     if let Some(rotation) = device.property_value("ID_ATA_ROTATION_RATE_RPM") {
         return if rotation == "0" {
             MediaType::SolidState
@@ -968,17 +1049,76 @@ fn get_media_type(device: &udev::Device) -> MediaType {
         };
     }
 
-    // No rotation rate.  Lets see if it's a virtual qemu disk
+    if let Some(id_cdrom) = device.property_value("ID_CDROM") {
+        if id_cdrom == "1" {
+            let id_cdrom_cd = device.property_value("ID_CDROM_CD")
+                .unwrap_or_default();
+
+            let id_cdrom_dvd = device.property_value("ID_CDROM_DVD")
+                .unwrap_or_default();
+
+            let id_cdrom_mrw = device.property_value("ID_CDROM_MRW")
+                .unwrap_or_default();
+
+            let id_cdrom_mrw_w = device.property_value("ID_CDROM_MRW_W")
+                .unwrap_or_default();
+
+            return MediaType::Optical {
+                cd: id_cdrom_cd == "1",
+                dvd: id_cdrom_dvd == "1",
+                mrw: id_cdrom_mrw == "1",
+                mrw_w: id_cdrom_mrw_w == "1",
+            }
+        }
+    }
+
+    // No rotation rate.  Lets see if it's a virtual disk
     if let Some(vendor) = device.property_value("ID_VENDOR") {
         let value = vendor.to_string_lossy();
+
         return match value.as_ref() {
-            "QEMU" => MediaType::Virtual,
-            _ => MediaType::Unknown,
+            "QEMU" => MediaType::Qemu,
+            "VBOX" => MediaType::VirtualBox,
+            // Something else, virtual or otherwise
+            other => {
+                let device_type = device.devtype()
+                    .and_then(|dt| dt.to_str());
+
+                if device_type == Some("partition") {
+                    MediaType::Partition
+                } else {
+                    let id_part_table_type = device.property_value("ID_PART_TABLE_TYPE");
+
+                    if id_part_table_type.map(|ptt| ptt.len()).unwrap_or_default() > 0 {
+                        // Not an individual partition, since we just tested that with the device type.
+                        MediaType::Partitions
+                    } else {
+                        if other == "ATA" {
+                            let id_model = device.property_value("ID_MODEL");
+
+                            if let Some(model) = id_model {
+                                if model == "VBOX_HARDDISK" {
+                                    return MediaType::VirtualBox;
+                                }
+                            }
+                        }
+
+                        let vendor = Vendor::from_str(other)
+                            .unwrap_or_else(|_| Vendor::Other(other.into()));
+
+                        MediaType::Unrecognised {
+                            vendor: Some(vendor)
+                        }
+                    }
+                }
+            },
         };
     }
 
     // I give up
-    MediaType::Unknown
+    MediaType::Unrecognised {
+        vendor: None
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1202,7 +1342,7 @@ pub struct ScsiInfo {
     pub channel: u8,
     pub id: u8,
     pub lun: u8,
-    pub vendor: Vendor,
+    pub vendor: Option<Vendor>,
     pub vendor_str: Option<String>,
     pub model: Option<String>,
     pub rev: Option<String>,
@@ -1289,8 +1429,8 @@ impl Default for ScsiInfo {
             channel: 0,
             id: 0,
             lun: 0,
-            vendor: Vendor::None,
-            vendor_str: Option::None,
+            vendor: None,
+            vendor_str: None,
             model: None,
             rev: None,
             state: None,
@@ -1333,7 +1473,8 @@ fn scsi_host_info(input: &str) -> Result<Vec<ScsiInfo>, BlockUtilsError> {
         }
         if line.contains("Vendor") {
             let parts = line.split_whitespace().collect::<Vec<&str>>();
-            scsi_info.vendor = parts[1].parse::<Vendor>()?;
+            scsi_info.vendor_str = Some(parts[1].into());
+            scsi_info.vendor = Some(parts[1].parse::<Vendor>()?);
             // Take until : is found
             let model = parts[3..]
                 .iter()
@@ -1514,9 +1655,15 @@ pub fn get_scsi_info() -> BlockResult<Vec<ScsiInfo>> {
                                 fs::read_to_string(&scsi_entry.path())?.trim(),
                             )?;
                         } else if scsi_entry.file_name() == OsStr::new("vendor") {
-                            let vendor_str = fs::read_to_string(&scsi_entry.path())?;
-                            s.vendor_str = Some(vendor_str.trim().to_string());
-                            s.vendor = Vendor::from_str(vendor_str.trim()).unwrap_or(Vendor::None);
+                            let vendor_str = fs::read_to_string(&scsi_entry.path())?
+                                .trim()
+                                .to_string();
+
+                            let vendor = Vendor::from_str(&vendor_str)
+                                .unwrap_or_else(|_| Vendor::Other(vendor_str.clone()));
+
+                            s.vendor = Some(vendor);
+                            s.vendor_str = Some(vendor_str);
                         }
                     }
                     scsi_devices.push(s);
